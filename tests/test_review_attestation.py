@@ -14,6 +14,7 @@ ATTESTATION = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ATTESTATION)
 HEAD = "a" * 40
 BASE = "b" * 40
+REPOSITORY = "Nane-Shop/Codex-Orchestration"
 
 
 def runtime_probe(
@@ -38,7 +39,7 @@ def body(**updates: object) -> str:
     value: dict[str, object] = {
         "schema": 1,
         "risk_tier": "security-state",
-        "repository": "Cjbuilds/Codex-Orchestration",
+        "repository": REPOSITORY,
         "base_branch": "main",
         "reviewed_head_sha": HEAD,
         "reviewer_identity": "Independent Reviewer",
@@ -75,7 +76,7 @@ def event(
     pr_body: str, *, head: str = HEAD, draft: bool = True
 ) -> dict[str, object]:
     return {
-        "repository": {"full_name": "Cjbuilds/Codex-Orchestration"},
+        "repository": {"full_name": REPOSITORY},
         "pull_request": {
             "body": pr_body,
             "draft": draft,
@@ -205,7 +206,7 @@ class ReviewAttestationTests(unittest.TestCase):
     def test_non_pr_event_needs_no_attestation(self) -> None:
         self.assertIsNone(
             ATTESTATION.validate_pull_request_event(
-                {"repository": {"full_name": "Cjbuilds/Codex-Orchestration"}},
+                {"repository": {"full_name": REPOSITORY}},
                 expected_base=BASE,
                 expected_head=HEAD,
                 changed_paths=["scripts/preflight.py"],

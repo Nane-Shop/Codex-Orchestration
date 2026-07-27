@@ -42,10 +42,21 @@ class TempRepository:
     def write_release(self, version: str, *, payload: str = "payload") -> None:
         files = {
             "plugins/codex-orchestration/.codex-plugin/plugin.json": (
-                '{"name":"codex-orchestration","version":"' + version + '"}\n'
+                '{"name":"codex-orchestration","version":"'
+                + version
+                + '","repository":"https://github.com/Nane-Shop/'
+                'Codex-Orchestration.git","homepage":"https://github.com/'
+                'Nane-Shop/Codex-Orchestration#readme","interface":{'
+                '"websiteURL":"https://github.com/Nane-Shop/'
+                'Codex-Orchestration"}}\n'
             ),
             "plugins/codex-orchestration/.mcp.json": '{"mcpServers":{}}\n',
             "plugins/codex-orchestration/skills/example/SKILL.md": payload + "\n",
+            ".agents/plugins/marketplace.json": (
+                '{"name":"codex-orchestration","plugins":[{"name":'
+                '"codex-orchestration","source":{"source":"local","path":'
+                '"./plugins/codex-orchestration"}}]}\n'
+            ),
             "CHANGELOG.md": f"# Changelog\n\n## {version} — Unreleased\n",
             "tests/plugin_lifecycle_smoke.py": f'NEW_VERSION = "{version}"\n',
             (
@@ -70,6 +81,42 @@ class TempRepository:
 class ReleaseCheckTests(unittest.TestCase):
     def test_checkout_release_metadata_is_consistent(self) -> None:
         self.assertEqual(RELEASE.run_check(REPO_ROOT, require_tag=False), "0.9.4")
+        self.assertEqual(
+            RELEASE.CANONICAL_SOURCE_URL,
+            "https://github.com/Nane-Shop/Codex-Orchestration.git",
+        )
+
+    def test_noncanonical_manifest_or_marketplace_source_fails(self) -> None:
+        repo = TempRepository()
+        self.addCleanup(repo.close)
+        repo.write_release("1.0.0")
+        manifest = (
+            repo.root
+            / "plugins/codex-orchestration/.codex-plugin/plugin.json"
+        )
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                "Nane-Shop", "another-owner"
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            RELEASE.ReleaseCheckError, "canonical repository source"
+        ):
+            RELEASE.run_check(repo.root, require_tag=False)
+
+        repo.write_release("1.0.0")
+        marketplace = repo.root / ".agents/plugins/marketplace.json"
+        marketplace.write_text(
+            marketplace.read_text(encoding="utf-8").replace(
+                "./plugins/codex-orchestration", "./plugins/other"
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            RELEASE.ReleaseCheckError, "marketplace plugin source"
+        ):
+            RELEASE.run_check(repo.root, require_tag=False)
 
     def test_unreleased_checkout_is_not_tag_ready(self) -> None:
         with self.assertRaisesRegex(RELEASE.ReleaseCheckError, "not tagged"):

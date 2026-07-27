@@ -6,8 +6,8 @@
     "name": "CJ Zafir",
     "url": "https://github.com/Cjbuilds"
   },
-  "homepage": "https://github.com/Cjbuilds/Codex-Orchestration#readme",
-  "repository": "https://github.com/Cjbuilds/Codex-Orchestration",
+  "homepage": "https://github.com/Nane-Shop/Codex-Orchestration#readme",
+  "repository": "https://github.com/Nane-Shop/Codex-Orchestration.git",
   "license": "MIT",
   "keywords": [
     "codex",
@@ -24,7 +24,7 @@
     "longDescription": "Use sealed Fable 5 or Opus 5 as one bundled Planner-or-Advisor subscription seat, and audited API models in supported bounded roles, without changing the root model or Desktop model picker.",
     "developerName": "CJ Zafir",
     "category": "Productivity",
-    "websiteURL": "https://github.com/Cjbuilds/Codex-Orchestration",
+    "websiteURL": "https://github.com/Nane-Shop/Codex-Orchestration",
     "brandColor": "#C8A951",
     "capabilities": [
       "Multi-model workflows",

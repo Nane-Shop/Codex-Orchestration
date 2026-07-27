@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.4 — Unreleased
+## 0.9.4 — 2026-07-27
 
 - Classify nonzero Claude CLI authentication and model subprocess exits into a
   closed, non-leaking diagnostic kind with fixed retryability and operator

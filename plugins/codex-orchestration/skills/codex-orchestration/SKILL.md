@@ -151,7 +151,8 @@ disable, seat settings, custom role operations, or task work. Resolve the absolu
 Codex binary used by the active host. First run `codex plugin list --json` and
 require exactly one enabled
 `codex-orchestration@codex-orchestration` entry whose marketplace source type is
-`git` and source is the canonical HTTPS GitHub repository. Refuse local, disabled,
+`git` and source is exactly the canonical HTTPS GitHub repository
+`https://github.com/Nane-Shop/Codex-Orchestration.git`. Refuse local, disabled,
 missing, duplicate, or unexpected sources without mutation. Then run only:
 
 ```bash

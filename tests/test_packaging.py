@@ -13,6 +13,9 @@ from scripts import preflight
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = REPO_ROOT / "plugins" / "codex-orchestration"
 SKILL_ROOT = PLUGIN_ROOT / "skills" / "codex-orchestration"
+CANONICAL_REPOSITORY = "Nane-Shop/Codex-Orchestration"
+CANONICAL_SOURCE_URL = f"https://github.com/{CANONICAL_REPOSITORY}.git"
+CANONICAL_WEB_URL = f"https://github.com/{CANONICAL_REPOSITORY}"
 
 
 class PackagingTests(unittest.TestCase):
@@ -43,7 +46,7 @@ class PackagingTests(unittest.TestCase):
         )
         self.assertEqual(attestation["schema"], 1)
         self.assertIn(attestation["risk_tier"], {"docs", "behavior", "security-state"})
-        self.assertEqual(attestation["repository"], "Cjbuilds/Codex-Orchestration")
+        self.assertEqual(attestation["repository"], CANONICAL_REPOSITORY)
         self.assertEqual(attestation["base_branch"], "main")
         self.assertRegex(attestation["reviewed_head_sha"], r"^[0-9a-f]{40}$")
         self.assertIsInstance(attestation["negative_test_evidence"], list)
@@ -257,6 +260,12 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(manifest["skills"], "./skills/")
         self.assertEqual(manifest["version"], "0.9.4")
         self.assertEqual(manifest["mcpServers"], "./.mcp.json")
+        self.assertEqual(manifest["repository"], CANONICAL_SOURCE_URL)
+        self.assertEqual(manifest["homepage"], f"{CANONICAL_WEB_URL}#readme")
+        self.assertEqual(
+            manifest["interface"]["websiteURL"],
+            CANONICAL_WEB_URL,
+        )
         self.assertRegex(
             manifest["version"],
             r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$",
@@ -265,8 +274,42 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(len(marketplace["plugins"]), 1)
         entry = marketplace["plugins"][0]
         self.assertEqual(entry["name"], "codex-orchestration")
+        self.assertEqual(entry["source"]["source"], "local")
         self.assertEqual(entry["source"]["path"], "./plugins/codex-orchestration")
         self.assertRegex(skill, r"(?m)^name: codex-orchestration$")
+        self.assertIn(CANONICAL_SOURCE_URL, skill)
+
+    def test_canonical_marketplace_source_is_used_in_operator_contracts(self) -> None:
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        security = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
+        changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+
+        install = f"codex plugin marketplace add {CANONICAL_SOURCE_URL}"
+        self.assertEqual(readme.count(install), 2)
+        self.assertIn(
+            f"{CANONICAL_WEB_URL}/security/advisories/new",
+            security,
+        )
+        self.assertIn("## 0.9.4 — 2026-07-27", changelog)
+
+        old_repository = "Cj" + "builds/Codex-Orchestration"
+        tracked = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        ).stdout.split("\0")
+        for relative in tracked:
+            if not relative:
+                continue
+            path = REPO_ROOT / relative
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeError:
+                continue
+            self.assertNotIn(old_repository, text, relative)
 
     def test_native_and_custom_configurators_are_packaged(self) -> None:
         native = SKILL_ROOT / "scripts" / "configure_native_routing.py"

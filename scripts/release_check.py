@@ -17,6 +17,7 @@ CHANGELOG_VERSION_RE = re.compile(
     r"^##\s+([^\s]+)\s+—\s+(.+)$", re.MULTILINE
 )
 MANIFEST_PATH = "plugins/codex-orchestration/.codex-plugin/plugin.json"
+MARKETPLACE_PATH = ".agents/plugins/marketplace.json"
 MCP_PATH = "plugins/codex-orchestration/.mcp.json"
 SKILLS_ROOT = "plugins/codex-orchestration/skills"
 LIFECYCLE_PATH = "tests/plugin_lifecycle_smoke.py"
@@ -27,6 +28,9 @@ ROUTING_PATH = (
 CHANGELOG_PATH = "CHANGELOG.md"
 GIT_TIMEOUT_SECONDS = 15
 MAX_GIT_OUTPUT = 1_000_000
+CANONICAL_REPOSITORY = "Nane-Shop/Codex-Orchestration"
+CANONICAL_SOURCE_URL = f"https://github.com/{CANONICAL_REPOSITORY}.git"
+CANONICAL_WEB_URL = f"https://github.com/{CANONICAL_REPOSITORY}"
 
 
 class ReleaseCheckError(RuntimeError):
@@ -324,6 +328,50 @@ def _manifest_version(reader: Callable[[str], str]) -> str:
     return version
 
 
+def _source_contract_check(reader: Callable[[str], str]) -> None:
+    try:
+        manifest = json.loads(reader(MANIFEST_PATH))
+        marketplace = json.loads(reader(MARKETPLACE_PATH))
+    except json.JSONDecodeError as exc:
+        raise ReleaseCheckError(f"source metadata is not valid JSON: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise ReleaseCheckError("plugin manifest must be a JSON object")
+    if manifest.get("repository") != CANONICAL_SOURCE_URL:
+        raise ReleaseCheckError(
+            f"manifest canonical repository source must be {CANONICAL_SOURCE_URL}"
+        )
+    if manifest.get("homepage") != f"{CANONICAL_WEB_URL}#readme":
+        raise ReleaseCheckError("manifest homepage does not match canonical repository")
+    interface = manifest.get("interface")
+    if (
+        not isinstance(interface, dict)
+        or interface.get("websiteURL") != CANONICAL_WEB_URL
+    ):
+        raise ReleaseCheckError(
+            "manifest websiteURL does not match canonical repository"
+        )
+    if not isinstance(marketplace, dict):
+        raise ReleaseCheckError("marketplace metadata must be a JSON object")
+    plugins = marketplace.get("plugins")
+    if not isinstance(plugins, list) or len(plugins) != 1:
+        raise ReleaseCheckError(
+            "marketplace metadata must declare exactly one plugin"
+        )
+    plugin = plugins[0]
+    expected_source = {
+        "source": "local",
+        "path": "./plugins/codex-orchestration",
+    }
+    if (
+        not isinstance(plugin, dict)
+        or plugin.get("name") != "codex-orchestration"
+        or plugin.get("source") != expected_source
+    ):
+        raise ReleaseCheckError(
+            "marketplace plugin source must point to the canonical local package"
+        )
+
+
 def _metadata_check(
     reader: Callable[[str], str],
     *,
@@ -331,6 +379,7 @@ def _metadata_check(
     require_tag: bool,
     tag_commit: str,
 ) -> str:
+    _source_contract_check(reader)
     version = _manifest_version(reader)
     changelog = reader(CHANGELOG_PATH)
     match = CHANGELOG_VERSION_RE.search(changelog)

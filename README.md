@@ -64,7 +64,7 @@ Results depend on the models, task, context, retries, and available parallel wor
 ## Install
 
 ```bash
-codex plugin marketplace add Cjbuilds/Codex-Orchestration
+codex plugin marketplace add https://github.com/Nane-Shop/Codex-Orchestration.git
 codex plugin add codex-orchestration@codex-orchestration
 ```
 
@@ -330,7 +330,18 @@ Model roles; version **0.9.0 or newer** adds Claude Opus 5 subscription routing.
 Confirm with
 `codex plugin list --json`, then restart Codex Desktop and start a new task.
 
-If the version stays old or `marketplaceSource.sourceType` is `local`, Codex is pointed at a local checkout rather than the GitHub marketplace. Enter the prompt `$codex-orchestration:codex-orchestration disable` first if a saved policy is active, then remove the plugin and that marketplace registration, add `Cjbuilds/Codex-Orchestration` again, and reinstall. This does not delete the local source checkout.
+If the version stays old or `marketplaceSource.sourceType` is `local`, Codex is
+pointed at a local checkout rather than the GitHub marketplace. Enter the prompt
+`$codex-orchestration:codex-orchestration disable` first if a saved policy is
+active, then remove the plugin and that marketplace registration, add the canonical
+marketplace again, and reinstall:
+
+```bash
+codex plugin marketplace add https://github.com/Nane-Shop/Codex-Orchestration.git
+codex plugin add codex-orchestration@codex-orchestration
+```
+
+This does not delete the local source checkout.
 
 Before downgrading to a version older than the currently saved routing schema, enter the prompt `$codex-orchestration:codex-orchestration disable` with the current version first.
 
