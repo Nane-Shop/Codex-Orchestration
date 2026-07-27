@@ -485,6 +485,18 @@ CLI's advertised set. Extra advertised values do not expand the sealed set.
 
 The bridge exposes only bounded, read-only planning operations. `create_plan` accepts one self-contained packet and requires `PLAN_DRAFT`. `revise_plan` requires the task, canonical current plan, latest critique, and compact findings history, then requires `PLAN_REVISION` plus a findings ledger and revised plan. `review_plan` remains the Advisor operation and requires a locally revalidated JSON Schema object containing exactly `PLAN_APPROVED` or `PLAN_REVISE` plus a non-empty body; raw prose never counts as a decision. Every call uses the same full saved-state validator as native status/repair/disable, then requires runtime `modelUsage` to contain a reviewed Fable primary identity (`claude-fable-5` or `claude-opus-4-8`) or the exact Opus primary, plus only that model's explicit exact helper allowlist. Fable permits its independently observed `claude-haiku-4-5-20251001` helper. No Opus helper identity is independently established, so Opus currently permits only `claude-opus-5` and fails closed if any additional runtime model appears. Return every observed ID in `used_models`; an unknown additional or missing primary model makes the seat unavailable. Any auth, transport, state, format, or model-confirmation failure makes that seat unavailable; it never counts as approval. The bridge returns no account identifier or credential. Local mocked verification does not prove a positive live Opus invocation.
 
+`status` is model-free: it may run the bounded first-party authentication check,
+but it never invokes a planning model. A nonzero authentication or model
+subprocess exit withholds raw stdout and stderr and exposes only a closed
+`failure_kind`, integer `exit_code`, fixed `retryable`, and fixed
+`operator_action`. Classification is diagnostic-only: no kind proves a review
+occurred and none grants approval. For repeated live failures, follow the bounded
+category action. `unknown_cli_failure` means the CLI/provider output could not be
+safely classified; wait or diagnose the CLI in a trusted local terminal. Do not
+prescribe restart or re-authentication for that unknown category. Restart Codex
+only after plugin install or update so the newly installed bridge loads, not for
+each live provider failure.
+
 The configured Fable route remains `claude-fable-5`, while runtime `modelUsage`
 may confirm either reviewed Fable primary identity. This does not make
 `claude-opus-4-8` an Opus route alias. Opus still requires the exact

@@ -1,6 +1,17 @@
 # Changelog
 
-## 0.9.3 — Unreleased
+## 0.9.4 — Unreleased
+
+- Classify nonzero Claude CLI authentication and model subprocess exits into a
+  closed, non-leaking diagnostic kind with fixed retryability and operator
+  guidance while continuing to withhold raw stdout and stderr.
+- Keep failure classifications diagnostic-only: no category implies that a
+  plan review occurred or that approval was granted. Repeated live failures now
+  return a bounded category and action instead of prescribing a restart loop;
+  restart remains required only after plugin install or update to load the new
+  bridge.
+
+## 0.9.3 — 2026-07-27
 
 - Raise the bounded Advisor approval loop from five to eight reviews while
   preserving immediate approval exit and fail-closed plan, ledger, and

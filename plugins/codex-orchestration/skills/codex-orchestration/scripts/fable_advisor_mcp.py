@@ -53,6 +53,7 @@ CLAUDE_TIMEOUT_SECONDS = 600
 AUTH_TIMEOUT_SECONDS = 20
 # Applies to the combined user-controlled text sent by one model operation.
 MAX_INPUT_CHARS = 200_000
+MAX_DIAGNOSTIC_OUTPUT_CHARS = 8_192
 PLAN_REVIEW_SCHEMA = {
     "type": "object",
     "properties": {
@@ -151,10 +152,180 @@ Both sections must be non-empty. Your first non-empty line must be exactly PLAN_
 SYSTEM_PROMPT = ADVISOR_SYSTEM_PROMPT
 
 Seat = Literal["planner", "advisor"]
+FailureKind = Literal[
+    "usage_limit",
+    "rate_limited",
+    "model_unavailable",
+    "authentication_failed",
+    "provider_unavailable",
+    "unknown_cli_failure",
+]
+FAILURE_KIND_PRECEDENCE: tuple[FailureKind, ...] = (
+    "usage_limit",
+    "rate_limited",
+    "model_unavailable",
+    "authentication_failed",
+    "provider_unavailable",
+)
+# These whole-message shapes were conservatively audited against the installed
+# Claude Code 2.1.212 binary. They are not a stable provider API: wording drift,
+# including an unaudited fast-limit reset suffix, safely falls back to unknown.
+_FAILURE_SIGNATURES: dict[FailureKind, frozenset[str]] = {
+    "usage_limit": frozenset(
+        {
+            "you've hit your monthly spend limit.",
+            (
+                "you've hit your monthly spend limit. run /usage-credits to manage "
+                "your limit and keep using fable 5 or switch models to continue "
+                "this chat."
+            ),
+            "you've hit your monthly spend limit. /model to switch models.",
+            "you've hit your fast limit",
+        }
+    ),
+    "rate_limited": frozenset(
+        {
+            "server is temporarily limiting requests (not your usage limit)",
+            "rate limited (429). polling too frequently.",
+        }
+    ),
+    "model_unavailable": frozenset(
+        {
+            f"api model not found: {FABLE_MODEL}",
+            f"api model not found: {OPUS_MODEL}",
+        }
+    ),
+    "authentication_failed": frozenset(
+        {
+            "authentication failed",
+            "authentication failed: invalid or missing api key",
+        }
+    ),
+    "provider_unavailable": frozenset(
+        {
+            "service unavailable",
+            "serviceunavailable",
+            "serviceunavailableexception",
+        }
+    ),
+    "unknown_cli_failure": frozenset(),
+}
+_FAILURE_POLICY: dict[FailureKind, tuple[bool, str]] = {
+    "usage_limit": (
+        True,
+        "Wait for the Claude usage window to reset, then retry the same sealed route.",
+    ),
+    "rate_limited": (
+        True,
+        "Wait before retrying the same sealed Claude route.",
+    ),
+    "model_unavailable": (
+        True,
+        "Wait for the pinned Claude model to become available; do not substitute "
+        "another model.",
+    ),
+    "authentication_failed": (
+        False,
+        "Run `claude auth login` in a trusted local terminal, then retry the same "
+        "sealed route.",
+    ),
+    "provider_unavailable": (
+        True,
+        "Wait for the Claude provider to recover, then retry the same sealed route.",
+    ),
+    "unknown_cli_failure": (
+        False,
+        "The Claude CLI/provider failure could not be safely classified; wait or "
+        "diagnose the Claude CLI in a trusted local terminal before retrying.",
+    ),
+}
 
 
 class AdvisorError(RuntimeError):
     """Fail-closed error for any bundled Claude bridge operation."""
+
+
+class ClaudeProcessFailure(AdvisorError):
+    """Bounded projection of a nonzero Claude model subprocess exit."""
+
+    failure_label = "model subprocess"
+
+    def __init__(self, failure_kind: FailureKind, exit_code: int) -> None:
+        if failure_kind not in _FAILURE_POLICY:
+            raise ValueError("invalid Claude process failure kind")
+        if type(exit_code) is not int:
+            raise ValueError("Claude process exit code must be an integer")
+        retryable, operator_action = _FAILURE_POLICY[failure_kind]
+        self.failure_kind = failure_kind
+        self.exit_code = exit_code
+        self.retryable = retryable
+        self.operator_action = operator_action
+        super().__init__()
+
+    def __str__(self) -> str:
+        return (
+            f"Claude {self.failure_label} failed "
+            f"(exit {self.exit_code}; output withheld)."
+        )
+
+
+class ClaudeAuthenticationProcessFailure(ClaudeProcessFailure):
+    """Bounded projection of a nonzero Claude authentication-check exit."""
+
+    failure_label = "Code authentication check"
+
+
+def _normalize_failure_output(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) > MAX_DIAGNOSTIC_OUTPUT_CHARS:
+        return None
+    if any(
+        ord(character) > 0x7E
+        or ord(character) < 0x20
+        and character not in {"\t", "\n", "\r"}
+        for character in value
+    ):
+        return None
+    return " ".join(value.casefold().split())
+
+
+def classify_claude_process_failure(
+    stdout: object, stderr: object
+) -> FailureKind:
+    """Classify only complete, exact, normalized diagnostics without returning them."""
+
+    matched: set[FailureKind] = set()
+    for raw_output in (stdout, stderr):
+        normalized = _normalize_failure_output(raw_output)
+        if normalized is None:
+            return "unknown_cli_failure"
+        if not normalized:
+            continue
+        channel_matches = {
+            kind
+            for kind in FAILURE_KIND_PRECEDENCE
+            if normalized in _FAILURE_SIGNATURES[kind]
+        }
+        if len(channel_matches) != 1:
+            return "unknown_cli_failure"
+        matched.update(channel_matches)
+    if len(matched) != 1:
+        return "unknown_cli_failure"
+    for kind in FAILURE_KIND_PRECEDENCE:
+        if matched == {kind}:
+            return kind
+    return "unknown_cli_failure"
+
+
+def _process_failure(
+    result: subprocess.CompletedProcess[str], *, authentication_check: bool
+) -> ClaudeProcessFailure:
+    kind = classify_claude_process_failure(result.stdout, result.stderr)
+    failure_type = (
+        ClaudeAuthenticationProcessFailure
+        if authentication_check
+        else ClaudeProcessFailure
+    )
+    return failure_type(kind, result.returncode)
 
 
 def codex_home() -> Path:
@@ -240,9 +411,7 @@ def _run_json(command: list[str], *, timeout: int) -> dict[str, Any]:
     except OSError as exc:
         raise AdvisorError("Could not run Claude Code authentication check.") from exc
     if result.returncode != 0:
-        raise AdvisorError(
-            f"Claude Code authentication check exited with {result.returncode}; output withheld."
-        )
+        raise _process_failure(result, authentication_check=True)
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
@@ -567,9 +736,7 @@ def _invoke_fable(
     except OSError as exc:
         raise AdvisorError(f"Could not start {display_name} {operation}.") from exc
     if result.returncode != 0:
-        raise AdvisorError(
-            f"{display_name} {operation} exited with {result.returncode}; output withheld."
-        )
+        raise _process_failure(result, authentication_check=False)
     try:
         decoded = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
@@ -872,6 +1039,18 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
                 result = _tool_result(status())
             else:
                 raise AdvisorError(f"Unknown tool: {name!r}.")
+        except ClaudeProcessFailure as exc:
+            result = _tool_result(
+                {
+                    "available": False,
+                    "error": str(exc),
+                    "failure_kind": exc.failure_kind,
+                    "exit_code": exc.exit_code,
+                    "retryable": exc.retryable,
+                    "operator_action": exc.operator_action,
+                },
+                is_error=True,
+            )
         except AdvisorError as exc:
             result = _tool_result(
                 {

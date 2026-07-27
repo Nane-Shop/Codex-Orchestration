@@ -212,6 +212,17 @@ POSIX identity values or inherit credential, config-redirection,
 provider/model/effort, endpoint/gateway, proxy/CA/mTLS, or telemetry override
 families.
 
+`status` is model-free: it may perform the bounded first-party authentication
+check, but it never invokes a planning model. When an authentication or model
+subprocess exits nonzero, the bridge withholds raw stdout and stderr and returns
+only a closed `failure_kind`, integer `exit_code`, fixed `retryable` value, and
+fixed `operator_action`. These classifications are diagnostics, not evidence
+that a review occurred and never count as approval. Repeated live failures use
+their bounded category and action; an unrecognized or ambiguous failure
+recommends waiting or trusted local-terminal CLI diagnostics. Restart Codex only
+after plugin install or update so the newly installed bridge can load, not as a
+generic remedy for each live provider failure.
+
 Models already available through Codex can still become ordinary user-owned roles:
 
 ```text
