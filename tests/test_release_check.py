@@ -119,8 +119,13 @@ class ReleaseCheckTests(unittest.TestCase):
             RELEASE.run_check(repo.root, require_tag=False)
 
     def test_unreleased_checkout_is_not_tag_ready(self) -> None:
+        repo = TempRepository()
+        self.addCleanup(repo.close)
+        repo.write_release("1.0.0")
+        repo.commit("unreleased")
+
         with self.assertRaisesRegex(RELEASE.ReleaseCheckError, "not tagged"):
-            RELEASE.run_check(REPO_ROOT, require_tag=True)
+            RELEASE.run_check(repo.root, require_tag=True)
 
     def test_semver_precedence_and_build_metadata(self) -> None:
         ordered = [
