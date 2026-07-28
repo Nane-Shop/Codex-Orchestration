@@ -457,7 +457,7 @@ class AppServer:
                     "clientInfo": {
                         "name": "codex_orchestration_installer",
                         "title": "Codex Orchestration Installer",
-                        "version": "0.9.4",
+                        "version": "0.9.5",
                     },
                     "capabilities": {"experimentalApi": True},
                 },

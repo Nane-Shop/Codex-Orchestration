@@ -498,6 +498,15 @@ prescribe restart or re-authentication for that unknown category. Restart Codex
 only after plugin install or update so the newly installed bridge loads, not for
 each live provider failure.
 
+Classify the observed structured Fable 5 limit as `usage_limit` only when bounded
+ASCII stdout is one JSON result object with the exact audited type, error status,
+terminal reason, empty `modelUsage`, and Fable limit message, and stderr is
+empty. Ignore volatile envelope fields without returning or logging them; never
+surface result text, session IDs, UUIDs, or account data. Malformed, drifted,
+oversized, non-ASCII, additional, or competing-channel output remains
+`unknown_cli_failure`. The fixed `usage_limit` action is to wait for the Claude
+usage window to reset and retry the same sealed route.
+
 The configured Fable route remains `claude-fable-5`, while runtime `modelUsage`
 may confirm either reviewed Fable primary identity. This does not make
 `claude-opus-4-8` an Opus route alias. Opus still requires the exact

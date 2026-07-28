@@ -258,7 +258,7 @@ class PackagingTests(unittest.TestCase):
 
         self.assertEqual(manifest["name"], "codex-orchestration")
         self.assertEqual(manifest["skills"], "./skills/")
-        self.assertEqual(manifest["version"], "0.9.4")
+        self.assertEqual(manifest["version"], "0.9.5")
         self.assertEqual(manifest["mcpServers"], "./.mcp.json")
         self.assertEqual(manifest["repository"], CANONICAL_SOURCE_URL)
         self.assertEqual(manifest["homepage"], f"{CANONICAL_WEB_URL}#readme")
@@ -290,7 +290,7 @@ class PackagingTests(unittest.TestCase):
             f"{CANONICAL_WEB_URL}/security/advisories/new",
             security,
         )
-        self.assertIn("## 0.9.4 — 2026-07-27", changelog)
+        self.assertIn("## 0.9.5 — 2026-07-28", changelog)
 
         old_repository = "Cj" + "builds/Codex-Orchestration"
         tracked = subprocess.run(
@@ -321,7 +321,7 @@ class PackagingTests(unittest.TestCase):
         self.assertFalse((SKILL_ROOT / "scripts" / "update_plugin.py").exists())
         self.assertIn("config/batchWrite", native.read_text(encoding="utf-8"))
         self.assertIn('"--repair"', native.read_text(encoding="utf-8"))
-        self.assertIn('"version": "0.9.4"', native.read_text(encoding="utf-8"))
+        self.assertIn('"version": "0.9.5"', native.read_text(encoding="utf-8"))
         self.assertIn("validate_routing_state", routing_state.read_text(encoding="utf-8"))
         self.assertIn("Standalone custom agent", custom.read_text(encoding="utf-8"))
 
@@ -496,7 +496,7 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("@openai/codex@0.144.1", workflow)
         smoke_text = smoke.read_text(encoding="utf-8")
         self.assertIn('OLD_VERSION = "0.5.0"', smoke_text)
-        self.assertIn('NEW_VERSION = "0.9.4"', smoke_text)
+        self.assertIn('NEW_VERSION = "0.9.5"', smoke_text)
         self.assertIn("old Advisor-only cache unexpectedly supports Planner", smoke_text)
         self.assertIn("Upgraded installed skill is missing Planner contract", smoke_text)
         self.assertIn("reused the Advisor-only 0.5.0 cache directory", smoke_text)

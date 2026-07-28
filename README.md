@@ -223,6 +223,15 @@ recommends waiting or trusted local-terminal CLI diagnostics. Restart Codex only
 after plugin install or update so the newly installed bridge can load, not as a
 generic remedy for each live provider failure.
 
+The bridge recognizes the observed structured Fable 5 limit only when bounded
+ASCII stdout is one JSON result object with the exact audited type, error status,
+terminal reason, empty `modelUsage`, and Fable limit message, while stderr is
+empty. Volatile envelope fields are ignored and never returned or logged,
+including result text, session IDs, UUIDs, and account data. Any field drift,
+malformed or additional output, or competing channel remains
+`unknown_cli_failure`. For `usage_limit`, wait for the Claude usage window to
+reset, then retry the same sealed route.
+
 Models already available through Codex can still become ordinary user-owned roles:
 
 ```text

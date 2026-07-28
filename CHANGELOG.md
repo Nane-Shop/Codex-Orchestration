@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.5 — 2026-07-28
+
+- Recognize only the exact bounded Claude Code structured Fable 5 usage-limit
+  result envelope as `usage_limit` when stdout contains one safe JSON object and
+  stderr is empty. The bridge ignores volatile envelope fields and never returns
+  or logs raw output, result text, session identifiers, UUIDs, or account data.
+- Keep malformed, ambiguous, oversized, non-ASCII, multi-channel, or drifted
+  structured output fail-closed as `unknown_cli_failure`, while preserving all
+  existing exact plain-text signatures and fixed operator guidance.
+
 ## 0.9.4 — 2026-07-27
 
 - Classify nonzero Claude CLI authentication and model subprocess exits into a

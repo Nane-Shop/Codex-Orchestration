@@ -1218,6 +1218,172 @@ class FableAdvisorMcpTests(unittest.TestCase):
                 normalized = "\n  " + "\t".join(signature.upper().split()) + " \r\n"
                 self.assertEqual(classifier(normalized, ""), expected)
 
+    def test_failure_classifier_accepts_exact_structured_fable_usage_limit(self) -> None:
+        classifier = getattr(FABLE, "classify_claude_process_failure", None)
+        self.assertTrue(callable(classifier))
+        stdout = json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": True,
+                "api_error_status": 429,
+                "terminal_reason": "api_error",
+                "result": (
+                    "You've reached your Fable 5 limit. Run /usage-credits to "
+                    "continue or switch models with /model."
+                ),
+                "modelUsage": {},
+                "session_id": "session-must-never-be-returned",
+                "uuid": "uuid-must-never-be-returned",
+            }
+        )
+
+        self.assertEqual(classifier(stdout, ""), "usage_limit")
+
+    def test_structured_usage_limit_classifier_rejects_drift_and_ambiguity(
+        self,
+    ) -> None:
+        classifier = getattr(FABLE, "classify_claude_process_failure", None)
+        self.assertTrue(callable(classifier))
+        message = (
+            "You've reached your Fable 5 limit. Run /usage-credits to continue "
+            "or switch models with /model."
+        )
+        valid = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": True,
+            "api_error_status": 429,
+            "terminal_reason": "api_error",
+            "result": message,
+            "modelUsage": {},
+        }
+
+        missing_type = dict(valid)
+        missing_type.pop("type")
+        missing_subtype = dict(valid)
+        missing_subtype.pop("subtype")
+        missing_terminal_reason = dict(valid)
+        missing_terminal_reason.pop("terminal_reason")
+        missing_model_usage = dict(valid)
+        missing_model_usage.pop("modelUsage")
+        rejected_objects = (
+            missing_type,
+            {**valid, "type": "assistant"},
+            missing_subtype,
+            {**valid, "subtype": "error"},
+            {**valid, "is_error": False},
+            {**valid, "is_error": 1},
+            {**valid, "is_error": "true"},
+            {**valid, "api_error_status": 500},
+            {**valid, "api_error_status": "429"},
+            {**valid, "api_error_status": True},
+            missing_terminal_reason,
+            {**valid, "terminal_reason": "rate_limit"},
+            {**valid, "result": message + " "},
+            {**valid, "result": "You've reached another usage limit."},
+            missing_model_usage,
+            {**valid, "modelUsage": []},
+            {**valid, "modelUsage": {"claude-fable-5": {"outputTokens": 0}}},
+        )
+        for payload in rejected_objects:
+            with self.subTest(payload=payload):
+                self.assertEqual(
+                    classifier(json.dumps(payload), ""),
+                    "unknown_cli_failure",
+                )
+
+        valid_json = json.dumps(valid)
+        oversized = valid_json + " " * FABLE.MAX_DIAGNOSTIC_OUTPUT_CHARS
+        rejected_outputs = (
+            f"prefix {valid_json}",
+            f"{valid_json} suffix",
+            json.dumps([valid]),
+            json.dumps("result"),
+            json.dumps(429),
+            "{malformed",
+            json.dumps({**valid, "extra": "é"}, ensure_ascii=False),
+            oversized,
+            (
+                '{"type":"assistant","type":"result","subtype":"success",'
+                '"is_error":true,"api_error_status":429,'
+                '"terminal_reason":"api_error","result":'
+                + json.dumps(message)
+                + ',"modelUsage":{}}'
+            ),
+        )
+        for stdout in rejected_outputs:
+            with self.subTest(stdout=repr(stdout)[:100]):
+                self.assertEqual(
+                    classifier(stdout, ""),
+                    "unknown_cli_failure",
+                )
+
+        rejected_channels = (
+            (valid_json, "You've hit your monthly spend limit."),
+            (valid_json, "Rate limited (429). Polling too frequently."),
+            (valid_json, " \n"),
+            (valid_json, valid_json),
+            ("", valid_json),
+        )
+        for stdout, stderr in rejected_channels:
+            with self.subTest(stdout=repr(stdout)[:80], stderr=repr(stderr)[:80]):
+                self.assertEqual(
+                    classifier(stdout, stderr),
+                    "unknown_cli_failure",
+                )
+
+    def test_structured_usage_limit_failure_projects_only_fixed_fields(self) -> None:
+        session_id = "session-must-never-be-returned"
+        uuid = "uuid-must-never-be-returned"
+        account = "alice@example.invalid"
+        stdout = json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": True,
+                "api_error_status": 429,
+                "terminal_reason": "api_error",
+                "result": (
+                    "You've reached your Fable 5 limit. Run /usage-credits to "
+                    "continue or switch models with /model."
+                ),
+                "modelUsage": {},
+                "session_id": session_id,
+                "uuid": uuid,
+                "account": account,
+            }
+        )
+        failed = self.completed(["claude"], stdout, returncode=1)
+        with (
+            mock.patch.dict(os.environ, {"CODEX_HOME": str(self.home)}),
+            mock.patch.object(
+                FABLE, "resolve_claude", return_value=Path("/fake/claude")
+            ),
+            mock.patch.object(
+                FABLE.subprocess, "run", side_effect=[self.auth_result(), failed]
+            ),
+        ):
+            with self.assertRaises(FABLE.ClaudeProcessFailure) as caught:
+                FABLE.review_plan("packet")
+
+        failure = caught.exception
+        self.assertEqual(
+            vars(failure),
+            {
+                "failure_kind": "usage_limit",
+                "exit_code": 1,
+                "retryable": True,
+                "operator_action": (
+                    "Wait for the Claude usage window to reset, then retry the "
+                    "same sealed route."
+                ),
+            },
+        )
+        rendered = str(failure)
+        for unsafe in (stdout, session_id, uuid, account, "/usage-credits"):
+            self.assertNotIn(unsafe, rendered)
+
     def test_failure_classifier_rejects_ambiguous_or_unsafe_output(self) -> None:
         classifier = getattr(FABLE, "classify_claude_process_failure", None)
         self.assertTrue(callable(classifier))

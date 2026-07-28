@@ -239,6 +239,10 @@ _FAILURE_POLICY: dict[FailureKind, tuple[bool, str]] = {
         "diagnose the Claude CLI in a trusted local terminal before retrying.",
     ),
 }
+_STRUCTURED_FABLE_USAGE_LIMIT_MESSAGE = (
+    "You've reached your Fable 5 limit. Run /usage-credits to continue or "
+    "switch models with /model."
+)
 
 
 class AdvisorError(RuntimeError):
@@ -288,16 +292,60 @@ def _normalize_failure_output(value: object) -> str | None:
     return " ".join(value.casefold().split())
 
 
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError("duplicate JSON key")
+        payload[key] = value
+    return payload
+
+
+def _reject_nonfinite_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant: {value}")
+
+
+def _is_structured_fable_usage_limit(value: object) -> bool:
+    if _normalize_failure_output(value) is None:
+        return False
+    try:
+        payload = json.loads(
+            value,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_nonfinite_json_constant,
+        )
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    if type(payload) is not dict:
+        return False
+    return (
+        payload.get("type") == "result"
+        and payload.get("subtype") == "success"
+        and type(payload.get("is_error")) is bool
+        and payload["is_error"] is True
+        and type(payload.get("api_error_status")) is int
+        and payload["api_error_status"] == 429
+        and payload.get("terminal_reason") == "api_error"
+        and payload.get("result") == _STRUCTURED_FABLE_USAGE_LIMIT_MESSAGE
+        and type(payload.get("modelUsage")) is dict
+        and payload["modelUsage"] == {}
+    )
+
+
 def classify_claude_process_failure(
     stdout: object, stderr: object
 ) -> FailureKind:
     """Classify only complete, exact, normalized diagnostics without returning them."""
 
+    normalized_stdout = _normalize_failure_output(stdout)
+    normalized_stderr = _normalize_failure_output(stderr)
+    if normalized_stdout is None or normalized_stderr is None:
+        return "unknown_cli_failure"
+    if stderr == "" and _is_structured_fable_usage_limit(stdout):
+        return "usage_limit"
+
     matched: set[FailureKind] = set()
-    for raw_output in (stdout, stderr):
-        normalized = _normalize_failure_output(raw_output)
-        if normalized is None:
-            return "unknown_cli_failure"
+    for normalized in (normalized_stdout, normalized_stderr):
         if not normalized:
             continue
         channel_matches = {
