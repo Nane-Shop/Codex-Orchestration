@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.6 — 2026-08-04
+
+- Accept Claude Code 2.1.220's exact `canonicalModel: claude-opus-5` and
+  `provider: firstParty` pair in Opus 5 `modelUsage` records while preserving
+  legacy numeric-only metadata and every existing top-level runtime-model gate.
+  Partial, mismatched, non-string, cross-route, or additional string identity
+  metadata remains fail-closed. This is parser compatibility only; routing,
+  model, effort, authentication, tools, session persistence, state schema, and
+  timeouts are unchanged.
+
 ## 0.9.5 — 2026-07-28
 
 - Recognize only the exact bounded Claude Code structured Fable 5 usage-limit

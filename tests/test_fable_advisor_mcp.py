@@ -784,6 +784,117 @@ class FableAdvisorMcpTests(unittest.TestCase):
                 model_usage={FABLE.FABLE_HELPER_MODEL: {"outputTokens": 1}},
             )
 
+    def test_opus_model_usage_accepts_claude_2_1_220_identity_pair(self) -> None:
+        usage = {
+            "claude-opus-5": {
+                "inputTokens": 3,
+                "outputTokens": 12,
+                "cacheReadInputTokens": 0,
+                "cacheCreationInputTokens": 0,
+                "webSearchRequests": 0,
+                "costUSD": 0,
+                "contextWindow": 1_000_000,
+                "maxOutputTokens": 64_000,
+                "canonicalModel": "claude-opus-5",
+                "provider": "firstParty",
+            }
+        }
+
+        self.assertEqual(
+            FABLE._validate_runtime_models(usage, "claude-opus-5"),
+            ["claude-opus-5"],
+        )
+
+    def test_opus_model_usage_keeps_legacy_numeric_metadata_compatible(self) -> None:
+        usage = {"claude-opus-5": {"outputTokens": 12}}
+
+        self.assertEqual(
+            FABLE._validate_runtime_models(usage, "claude-opus-5"),
+            ["claude-opus-5"],
+        )
+
+    def test_opus_model_usage_identity_fields_fail_closed(self) -> None:
+        numeric_metrics = {"outputTokens": 12}
+        malformed_fields = (
+            {"canonicalModel": "claude-opus-4-8", "provider": "firstParty"},
+            {"canonicalModel": "", "provider": "firstParty"},
+            {"canonicalModel": 7, "provider": "firstParty"},
+            {"canonicalModel": "claude-opus-5", "provider": "bedrock"},
+            {"canonicalModel": "claude-opus-5", "provider": ""},
+            {"canonicalModel": "claude-opus-5", "provider": 7},
+        )
+        for identity_fields in malformed_fields:
+            with self.subTest(identity_fields=identity_fields):
+                with self.assertRaisesRegex(
+                    FABLE.AdvisorError, "malformed modelUsage value"
+                ):
+                    FABLE._validate_runtime_models(
+                        {
+                            "claude-opus-5": {
+                                **numeric_metrics,
+                                **identity_fields,
+                            }
+                        },
+                        "claude-opus-5",
+                    )
+
+    def test_opus_model_usage_identity_pair_is_all_or_nothing(self) -> None:
+        partial_pairs = (
+            {"outputTokens": 12, "canonicalModel": "claude-opus-5"},
+            {"outputTokens": 12, "provider": "firstParty"},
+        )
+        for model_usage in partial_pairs:
+            with self.subTest(model_usage=model_usage):
+                with self.assertRaisesRegex(
+                    FABLE.AdvisorError, "malformed modelUsage value"
+                ):
+                    FABLE._validate_runtime_models(
+                        {"claude-opus-5": model_usage}, "claude-opus-5"
+                    )
+
+    def test_opus_model_usage_identity_cannot_launder_unknown_model(self) -> None:
+        usage = {
+            "claude-opus-5-unreviewed": {
+                "outputTokens": 12,
+                "canonicalModel": "claude-opus-5",
+                "provider": "firstParty",
+            }
+        }
+
+        with self.assertRaisesRegex(
+            FABLE.AdvisorError, "did not confirm the pinned Claude Opus 5"
+        ):
+            FABLE._validate_runtime_models(usage, "claude-opus-5")
+
+    def test_opus_model_usage_rejects_unknown_string_fields(self) -> None:
+        usage = {
+            "claude-opus-5": {
+                "outputTokens": 12,
+                "canonicalModel": "claude-opus-5",
+                "provider": "firstParty",
+                "futureIdentity": "claude-opus-5",
+            }
+        }
+
+        with self.assertRaisesRegex(
+            FABLE.AdvisorError, "malformed modelUsage value"
+        ):
+            FABLE._validate_runtime_models(usage, "claude-opus-5")
+
+    def test_opus_identity_metadata_remains_unavailable_to_fable_routes(self) -> None:
+        usage = {
+            "claude-fable-5": {
+                "outputTokens": 12,
+                "canonicalModel": "claude-fable-5",
+                "provider": "firstParty",
+            }
+        }
+
+        with self.assertRaisesRegex(
+            FABLE.AdvisorError, "malformed modelUsage value"
+        ):
+            FABLE._validate_runtime_models(usage, "claude-fable-5")
+
     def test_opus_planner_create_and_revise_pin_exact_route_and_primary_usage(
         self,
     ) -> None:

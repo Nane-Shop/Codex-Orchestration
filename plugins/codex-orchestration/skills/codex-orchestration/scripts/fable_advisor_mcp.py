@@ -590,10 +590,22 @@ def _validate_runtime_models(
             f"Runtime metadata reported a model outside the allowed {policy_label} "
             "runtime policy."
         )
+    opus_identity_fields = {"canonicalModel", "provider"}
     for model_usage in usage.values():
         if not isinstance(model_usage, dict) or not model_usage:
             raise AdvisorError("Runtime metadata has a malformed modelUsage value.")
+        present_identity_fields = opus_identity_fields.intersection(model_usage)
+        if present_identity_fields and (
+            primary_model != OPUS_MODEL
+            or present_identity_fields != opus_identity_fields
+            or model_usage["canonicalModel"] != OPUS_MODEL
+            or model_usage["provider"] != "firstParty"
+        ):
+            raise AdvisorError("Runtime metadata has a malformed modelUsage value.")
+        numeric_field_count = 0
         for field, value in model_usage.items():
+            if field in opus_identity_fields:
+                continue
             is_nonnegative_finite_number = (
                 type(value) is int
                 and value >= 0
@@ -609,6 +621,9 @@ def _validate_runtime_models(
                 raise AdvisorError(
                     "Runtime metadata has a malformed modelUsage value."
                 )
+            numeric_field_count += 1
+        if numeric_field_count == 0:
+            raise AdvisorError("Runtime metadata has a malformed modelUsage value.")
     used_models = sorted(raw_models)
     if not set(used_models).intersection(reviewed_primaries):
         raise AdvisorError(
