@@ -258,7 +258,7 @@ class PackagingTests(unittest.TestCase):
 
         self.assertEqual(manifest["name"], "codex-orchestration")
         self.assertEqual(manifest["skills"], "./skills/")
-        self.assertEqual(manifest["version"], "0.9.8")
+        self.assertEqual(manifest["version"], "0.10.0")
         self.assertEqual(manifest["mcpServers"], "./.mcp.json")
         self.assertEqual(manifest["repository"], CANONICAL_SOURCE_URL)
         self.assertEqual(manifest["homepage"], f"{CANONICAL_WEB_URL}#readme")
@@ -290,7 +290,7 @@ class PackagingTests(unittest.TestCase):
             f"{CANONICAL_WEB_URL}/security/advisories/new",
             security,
         )
-        self.assertIn("## 0.9.8 — 2026-08-11", changelog)
+        self.assertIn("## 0.10.0 — 2026-08-12", changelog)
 
         old_repository = "Cj" + "builds/Codex-Orchestration"
         tracked = subprocess.run(
@@ -321,7 +321,7 @@ class PackagingTests(unittest.TestCase):
         self.assertFalse((SKILL_ROOT / "scripts" / "update_plugin.py").exists())
         self.assertIn("config/batchWrite", native.read_text(encoding="utf-8"))
         self.assertIn('"--repair"', native.read_text(encoding="utf-8"))
-        self.assertIn('"version": "0.9.8"', native.read_text(encoding="utf-8"))
+        self.assertIn('"version": "0.10.0"', native.read_text(encoding="utf-8"))
         self.assertIn("validate_routing_state", routing_state.read_text(encoding="utf-8"))
         self.assertIn("Standalone custom agent", custom.read_text(encoding="utf-8"))
 
@@ -485,6 +485,26 @@ class PackagingTests(unittest.TestCase):
         )
         self.assertLessEqual(len(yaml_prompt), 128)
 
+    def test_opus_is_the_leading_bundled_advisor_prompt(self) -> None:
+        manifest = json.loads(
+            (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        prompts = manifest["interface"]["defaultPrompt"]
+        self.assertIn("Advisor: Claude Opus 5 High", prompts[0])
+
+        metadata = (SKILL_ROOT / "agents" / "openai.yaml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("advisor: Claude Opus 5 High", metadata)
+
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertLess(
+            readme.index("setup advisor: Claude Opus 5"),
+            readme.index("setup advisor: Claude Fable 5"),
+        )
+
     def test_ci_runs_dual_version_plugin_lifecycle(self) -> None:
         workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
@@ -497,7 +517,7 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("@openai/codex@0.144.1", workflow)
         smoke_text = smoke.read_text(encoding="utf-8")
         self.assertIn('OLD_VERSION = "0.5.0"', smoke_text)
-        self.assertIn('NEW_VERSION = "0.9.8"', smoke_text)
+        self.assertIn('NEW_VERSION = "0.10.0"', smoke_text)
         self.assertIn("old Advisor-only cache unexpectedly supports Planner", smoke_text)
         self.assertIn("Upgraded installed skill is missing Planner contract", smoke_text)
         self.assertIn("reused the Advisor-only 0.5.0 cache directory", smoke_text)
@@ -584,10 +604,11 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("limits about 40% less often", readme)
         self.assertIn("speed and limit figures are targets, not guarantees", readme)
 
-    def test_fable_is_the_primary_quick_start(self) -> None:
+    def test_opus_leads_quick_start_and_fable_remains_available(self) -> None:
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
         self.assertIn("## Quick start", readme)
+        self.assertIn("advisor: Claude Opus 5 High", readme)
         self.assertIn(
             "planner: Claude Fable 5 High",
             readme,

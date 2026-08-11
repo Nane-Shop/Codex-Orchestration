@@ -365,11 +365,11 @@ Add `--advisor-model` and `--advisor-effort` for a same-provider Codex advisor. 
 
 For Claude Opus 5 Advisor, use `--advisor-opus` with an optional exact
 `--advisor-effort low|medium|high|xhigh|max`. The default is `high`. Setup also
-requires Claude Code 2.1.219 or newer. It checks version, first-party login,
+requires Claude Code 2.1.220 or newer. It checks version, first-party login,
 required flags, and that the installed CLI advertises the selected effort; extra
 future CLI efforts remain unselectable.
 
-Add `--planner-model` and `--planner-effort` for a same-provider Planner. For Claude Fable 5, use `--planner-fable`; add `--planner-effort low|medium|high|xhigh|max` when the user chooses one. For Claude Opus 5, use `--planner-opus` with the same exact five values and the same 2.1.219 minimum. Planner omission persists no Planner route and means the root plans. A configured Planner and Advisor must not resolve to the same model or agent route; independent review is required.
+Add `--planner-model` and `--planner-effort` for a same-provider Planner. For Claude Fable 5, use `--planner-fable`; add `--planner-effort low|medium|high|xhigh|max` when the user chooses one. For Claude Opus 5, use `--planner-opus` with the same exact five values and the same 2.1.220 minimum. Planner omission persists no Planner route and means the root plans. A configured Planner and Advisor must not resolve to the same model or agent route; independent review is required.
 
 Add `--designer-model` and `--designer-effort` for a persistent same-provider
 Designer. Designer omission persists `designer: none`. Designer cannot use the
@@ -456,14 +456,15 @@ Disable must remain available even if an older client is incompatible with the a
 
 For personal v0.4 custom roles, preview and apply removal with `configure_orchestration.py --scope personal --personal-route-names --remove-saved-roles`. For older fixed-name personal roles, run a separate preview without `--personal-route-names`. Project removal uses `--scope project --root <trusted-project> --remove-saved-roles`. Delete only files that the configurator fully validates as managed; edited or user-owned files require manual review.
 
-## Claude Fable 5 or Claude Opus 5 Planner or Advisor
+## Claude Opus 5 or Claude Fable 5 Planner or Advisor
+
+Use the sealed bridge when the user names Claude Opus 5. Its exact model ID is
+`claude-opus-5`, and Claude Code 2.1.220 or newer is required. Opus is the
+leading bundled Advisor example; omission still means `advisor: none`. In
+user-facing diagnostics use the exact name `Claude Opus 5`.
 
 Use this built-in route when the user names Claude Fable 5. Do not create a custom provider or custom-agent file for it.
 Claude Fable 5 remains a built-in cross-provider Planner or Advisor exception.
-
-Use the same sealed bridge when the user names Claude Opus 5. Its exact model
-ID is `claude-opus-5`, and Claude Code 2.1.219 or newer is required. In
-user-facing diagnostics use the exact name `Claude Opus 5`.
 
 In user-facing diagnostic status or operation results, use the exact name `Claude Fable 5`.
 The concise activation confirmation preserves the supplied `Fable 5` label when that is what the user wrote, as shown in its exact example.
@@ -484,7 +485,30 @@ exactly `low`, `medium`, `high`, `xhigh`, and `max`; no alias is accepted.
 Setup requires only that the selected sealed effort appear in the installed
 CLI's advertised set. Extra advertised values do not expand the sealed set.
 
-The bridge exposes only bounded, read-only planning operations. `create_plan` accepts one self-contained packet and requires `PLAN_DRAFT`. `revise_plan` requires the task, canonical current plan, latest critique, and compact findings history, then requires `PLAN_REVISION` plus a findings ledger and revised plan. `review_plan` remains the Advisor operation and requires a locally revalidated JSON Schema object containing exactly `PLAN_APPROVED` or `PLAN_REVISE` plus a non-empty body; raw prose never counts as a decision. Every call uses the same full saved-state validator as native status/repair/disable, then requires runtime `modelUsage` to contain a reviewed Fable primary identity (`claude-fable-5` or `claude-opus-4-8`) or the exact Opus primary, plus only that model's explicit exact helper allowlist. Fable permits its independently observed `claude-haiku-4-5-20251001` helper. No Opus helper identity is independently established, so Opus currently permits only `claude-opus-5` and fails closed if any additional runtime model appears. Return every observed ID in `used_models`; an unknown additional or missing primary model makes the seat unavailable. Any auth, transport, state, format, or model-confirmation failure makes that seat unavailable; it never counts as approval. The bridge returns no account identifier or credential. Local mocked verification does not prove a positive live Opus invocation.
+The bridge exposes bounded, read-only planning operations. `create_plan` and
+`revise_plan` retain their stateless Planner contracts. `review_plan` requires a
+structured, hash-bound session request: immutable task closure scope, stable
+criteria and safety IDs, round/predecessor attestation, monotonic plan version,
+current plan hash, changed surface, and findings ledger. The bridge recomputes
+hashes, stores only bounded non-secret metadata, rejects replay/skip/restart
+resume, and makes approval, policy halts, convergence halts, and review five
+terminal. `PLAN_REVISE` requires an evidenced A, A-uncertain, or B blocker tied
+to approved scope; optional hardening is non-blocking `C` backlog and new scope
+requests require user authority. Raw prose never counts as a decision.
+
+Every Claude invocation uses a new process group. Timeout handling terminates,
+escalates, and reaps the complete group before returning a bounded error. The
+public review result includes session/convergence telemetry, exact runtime
+identity, terminal/stop reason, and a canonical response attestation. Opus
+requires the exact current ten-key `modelUsage` record with
+`canonicalModel=claude-opus-5` and `provider=firstParty`; numeric-only legacy
+records and helpers fail closed. No Opus helper identity is independently established.
+Fable requires the reviewed Fable primary identity (`claude-fable-5` or `claude-opus-4-8`)
+and retains an explicit exact helper allowlist; any unknown additional or missing primary model
+fails closed. The bridge returns no prompt, output,
+account identifier, credential,
+environment value, or executable path in telemetry. Local mocked verification
+does not prove a positive live Opus invocation.
 
 `status` is model-free: it may run the bounded first-party authentication check,
 but it never invokes a planning model. A nonzero authentication or model
@@ -497,6 +521,8 @@ safely classified; wait or diagnose the CLI in a trusted local terminal. Do not
 prescribe restart or re-authentication for that unknown category. Restart Codex
 only after plugin install or update so the newly installed bridge loads, not for
 each live provider failure.
+
+A provider or bridge failure is diagnostic only; it never counts as approval.
 
 Classify the observed structured Fable 5 limit as `usage_limit` only when bounded
 ASCII stdout is one JSON result object with the exact audited type, error status,
@@ -626,17 +652,37 @@ Tool acceptance proves the requested route was valid and accepted, not necessari
 
 Planner is optional. When no Planner route is configured, the root creates and revises the plan. When configured, send the Planner one self-contained packet containing user intent, acceptance criteria, repository facts, constraints, proposed executor slices, risks, and verification. Require `PLAN_DRAFT`. Planner and Advisor report only to the root. They never edit, execute, spawn, contact one another, contact Executors, or release Executor work.
 
-Advisor is optional. If none is configured, the root validates the Planner's draft and may continue. For a non-trivial plan with an Advisor, use this bounded approval loop:
+Advisor is optional. If none is configured, the root validates the Planner's
+draft and may continue. For a non-trivial plan with an Advisor, use one bounded
+review session:
 
-1. Number the canonical plan version and send it to a fresh, stateless Advisor call.
-2. Require `PLAN_APPROVED` or `PLAN_REVISE` as the first-line signal.
-3. `PLAN_APPROVED` makes that exact version the approved plan. Stop reviewing immediately.
-4. For `PLAN_REVISE`, assign stable IDs to material findings and send the canonical current version, latest critique, and compact cumulative findings ledger back to the same Planner route. If Planner is omitted, the root revises.
-5. Require `PLAN_REVISION`, a complete `FINDINGS_LEDGER`, and the revised plan. Every latest finding must be `INCORPORATED` or `REJECTED` with a concrete reason. Reject stale source versions, missing or duplicated findings, and empty rationales.
-6. Increment the version and send the new current plan plus compact ledger to a fresh Advisor call. Ask it to confirm or contest prior dispositions rather than repeat accepted findings.
+1. Freeze the task goal, approved scope, non-goals, stable acceptance criteria,
+   and safety invariants. Compute the canonical scope hash and current UTF-8 plan
+   hash; begin round one with an empty predecessor attestation.
+2. Send the complete structured session request and require a typed
+   `PLAN_APPROVED` or `PLAN_REVISE` result. `PLAN_APPROVED` is valid only with no
+   blockers and makes the session terminal.
+3. Treat only evidenced A, A-uncertain, and B findings tied to approved criteria
+   or safety invariants as blockers. Keep optional hardening in `C` backlog and
+   new scope requests non-blocking until the user authorizes scope change.
+4. On `PLAN_REVISE`, send the canonical version and compact cumulative findings
+   ledger to the same Planner route, or let the root revise when Planner is
+   omitted. Require `PLAN_REVISION`, a complete `FINDINGS_LEDGER`, and the full
+   revised plan. Reject stale source versions, missing or duplicated findings,
+   and empty rationales.
+5. Increment the plan version, recompute its hash, pass the exact prior response
+   attestation, identify the changed surface, and review again. Never invent a
+   later-round blocker without new evidence or a changed-surface cause.
+6. Honor runtime terminal state. Two consecutive high-closure rounds that add
+   blockers halt as `NON_CONVERGING_REVIEW`; plan growth over 25 percent with a
+   new blocker and no authorized change halts as `UNAUTHORIZED_PLAN_GROWTH`.
+   A halt is never approval.
 7. Stop early on approval. Never exceed five total Advisor reviews.
 
-Carry only the original constraints, current plan, and compact ledger between fresh calls; do not duplicate complete transcripts. The root owns the canonical plan, versions, ledger, round count, semantic validation, and Executor release. Planner and Advisor never contact one another directly.
+Carry only the immutable closure scope, current plan, and compact cumulative findings ledger;
+do not duplicate transcripts or the detailed runtime schema in policy prose. The
+root owns the canonical plan version, stable IDs, ledger, round count, semantic
+validation, and Executor release. Planner and Advisor never contact one another directly.
 
 If review five still returns `PLAN_REVISE`, halt before Executor work. Give the user the latest plan and version, complete ledger, latest unresolved findings, and choices to override, re-scope, or change a route. Never label it approved.
 

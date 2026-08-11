@@ -49,7 +49,12 @@ The model selected for the Codex task remains in charge. It passes work between 
                     CODEX TESTS & DELIVERS
 ```
 
-Planner and Advisor can work through several revisions. Codex stops as soon as the Advisor returns `PLAN_APPROVED`, with a safety limit of five reviews. If approval is not reached, execution stops and Codex shows you the latest plan and unresolved issues.
+Planner and Advisor can work through several revisions. The Advisor closes the
+approved task criteria and safety invariants; optional hardening stays in a
+non-blocking `C` backlog. Each review is hash-bound to its scope, plan, round,
+and predecessor. Codex stops on approval, after five reviews, or when runtime
+convergence controls detect a review treadmill or unauthorized plan growth.
+Every terminal halt stops before Executor work and is never approval.
 
 ## Why use it?
 
@@ -77,7 +82,14 @@ Start an ordinary Codex prompt with the literal skill label
 not terminal commands. You can also browse installed skills with Codex's built-in
 `/skills` discovery.
 
-Use Fable 5 to plan, Sol to advise, and Luna to implement:
+Use Claude Opus 5 as the standard bundled Advisor while the current Codex model
+plans and Luna implements:
+
+```text
+$codex-orchestration:codex-orchestration setup advisor: Claude Opus 5 High, executor: GPT-5.6 Luna Extra High
+```
+
+Or use Fable 5 to plan, Sol to advise, and Luna to implement:
 
 ```text
 $codex-orchestration:codex-orchestration setup planner: Claude Fable 5 High, advisor: GPT-5.6 Sol High, executor: GPT-5.6 Luna Extra High
@@ -89,16 +101,10 @@ Add a dedicated Designer when the work needs a design handoff:
 $codex-orchestration:codex-orchestration setup planner: Claude Fable 5 High, advisor: GPT-5.6 Sol High, designer: GPT-5.6 Terra High, executor: GPT-5.6 Luna Extra High
 ```
 
-Or let your current Codex model plan and use Fable 5 only as Advisor:
+Or let your current Codex model plan and use Fable 5 as Advisor:
 
 ```text
 $codex-orchestration:codex-orchestration setup advisor: Claude Fable 5 High, executor: GPT-5.6 Luna Extra High
-```
-
-Or use Claude Opus 5 as the Advisor:
-
-```text
-$codex-orchestration:codex-orchestration setup advisor: Claude Opus 5 XHigh, executor: GPT-5.6 Luna Extra High
 ```
 
 After setup, start another new task and use Codex normally. The saved workflow applies automatically.
@@ -106,7 +112,7 @@ After setup, start another new task and use Codex normally. The saved workflow a
 Fable defaults to **High**. You can choose **Low**, **Medium**, **High**, **XHigh**, or **Max**. **Ultra** is accepted as an alias for Max because Claude Code does not expose a separate Ultra effort.
 
 Opus 5 also defaults to **High** and supports the same five exact effort values,
-but not the Fable-only **Ultra** alias. Opus requires Claude Code **2.1.219 or
+but not the Fable-only **Ultra** alias. Opus requires Claude Code **2.1.220 or
 newer**.
 
 Fable 5 and Opus 5 use the official Claude Code CLI and a compatible first-party Claude login. You do not need to add an Anthropic API key to Codex.

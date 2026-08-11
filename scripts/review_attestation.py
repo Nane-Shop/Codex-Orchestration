@@ -34,6 +34,7 @@ FIELDS_V1 = {
     "findings_disposition",
 }
 FIELDS_V2 = FIELDS_V1 | {"runtime_probe"}
+FIELDS_V3 = FIELDS_V1 | {"opus_runtime_qualification"}
 RUNTIME_PROBE_FIELDS = {
     "status",
     "provider",
@@ -47,6 +48,21 @@ RUNTIME_PROBE_PATH = (
     "plugins/codex-orchestration/skills/codex-orchestration/providers/openrouter.json"
 )
 RUNTIME_PROBE_TUPLE = ("openrouter", "moonshotai/kimi-k3", "max")
+OPUS_QUALIFICATION_FIELDS = {
+    "status",
+    "provider",
+    "configured_model",
+    "canonical_model",
+    "claude_code_version",
+    "effort",
+    "tested_head_sha",
+    "evidence",
+}
+OPUS_QUALIFICATION_PATH = (
+    "plugins/codex-orchestration/skills/codex-orchestration/"
+    "scripts/fable_advisor_mcp.py"
+)
+OPUS_MIN_CLAUDE_VERSION = (2, 1, 220)
 SECURITY_PATHS = {
     "AGENTS.md",
     ".github/CODEOWNERS",
@@ -256,6 +272,67 @@ def _validate_runtime_probe(
             raise AttestationError("failed runtime_probe tested SHA is invalid")
 
 
+def _validate_opus_runtime_qualification(
+    value: Any,
+    *,
+    expected_head: str,
+    pull_request_draft: Any,
+) -> None:
+    if not isinstance(value, dict) or set(value) != OPUS_QUALIFICATION_FIELDS:
+        raise AttestationError(
+            "opus_runtime_qualification fields do not match schema 3"
+        )
+    status = value["status"]
+    if status not in RUNTIME_PROBE_STATUSES:
+        raise AttestationError("Opus runtime qualification status is unsupported")
+    if (
+        value["provider"],
+        value["configured_model"],
+        value["canonical_model"],
+    ) != ("firstParty", "claude-opus-5", "claude-opus-5"):
+        raise AttestationError("Opus runtime qualification identity is invalid")
+    if value["effort"] not in {"low", "medium", "high", "xhigh", "max"}:
+        raise AttestationError("Opus runtime qualification effort is invalid")
+    version = value["claude_code_version"]
+    version_match = (
+        re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version)
+        if isinstance(version, str)
+        else None
+    )
+    if version_match is None or (
+        tuple(map(int, version_match.groups())) < OPUS_MIN_CLAUDE_VERSION
+    ):
+        raise AttestationError("Opus runtime qualification version is invalid")
+    evidence = _meaningful_string(
+        value["evidence"], "Opus runtime qualification evidence"
+    )
+    tested_head = value["tested_head_sha"]
+    if status == "passed":
+        if tested_head != expected_head:
+            raise AttestationError(
+                "Opus runtime qualification tested SHA is stale or incorrect"
+            )
+        normalized = evidence.casefold()
+        if "live" not in normalized or any(
+            forbidden in normalized
+            for forbidden in ("fake-model", "configured route", "readiness")
+        ):
+            raise AttestationError(
+                "passed Opus qualification requires live invocation evidence"
+            )
+        return
+    if pull_request_draft is not True:
+        raise AttestationError(
+            "an unpassed Opus qualification is allowed only on a draft pull request"
+        )
+    if status == "pending" and tested_head is not None:
+        raise AttestationError("pending Opus qualification cannot claim a tested SHA")
+    if status == "failed" and tested_head is not None and (
+        not isinstance(tested_head, str) or not EXACT_SHA_RE.fullmatch(tested_head)
+    ):
+        raise AttestationError("failed Opus qualification tested SHA is invalid")
+
+
 def parse_attestation(body: str) -> dict[str, Any]:
     if len(body) > 200_000:
         raise AttestationError("pull request body is too large")
@@ -273,9 +350,9 @@ def parse_attestation(body: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise AttestationError("attestation must be an object")
     schema = value.get("schema")
-    if type(schema) is not int or schema not in {1, 2}:
-        raise AttestationError("attestation schema must be the integer 1 or 2")
-    fields = FIELDS_V1 if schema == 1 else FIELDS_V2
+    if type(schema) is not int or schema not in {1, 2, 3}:
+        raise AttestationError("attestation schema must be the integer 1, 2, or 3")
+    fields = FIELDS_V1 if schema == 1 else FIELDS_V2 if schema == 2 else FIELDS_V3
     if set(value) != fields:
         raise AttestationError(f"attestation fields do not match schema {schema}")
     return value
@@ -311,8 +388,8 @@ def validate_pull_request_event(
         raise AttestationError("pull request body is missing")
 
     value = parse_attestation(body)
-    if type(value["schema"]) is not int or value["schema"] not in {1, 2}:
-        raise AttestationError("attestation schema must be the integer 1 or 2")
+    if type(value["schema"]) is not int or value["schema"] not in {1, 2, 3}:
+        raise AttestationError("attestation schema must be the integer 1, 2, or 3")
     if value["repository"] != EXPECTED_REPOSITORY:
         raise AttestationError("attestation repository does not match")
     if value["base_branch"] != EXPECTED_BASE:
@@ -328,6 +405,17 @@ def validate_pull_request_event(
     if value["schema"] == 2:
         _validate_runtime_probe(
             value["runtime_probe"],
+            expected_head=expected_head,
+            pull_request_draft=pull_request.get("draft"),
+        )
+    opus_qualification_required = OPUS_QUALIFICATION_PATH in changed_paths
+    if opus_qualification_required and value["schema"] != 3:
+        raise AttestationError(
+            "Advisor bridge changes require schema 3 Opus runtime qualification"
+        )
+    if value["schema"] == 3:
+        _validate_opus_runtime_qualification(
+            value["opus_runtime_qualification"],
             expected_head=expected_head,
             pull_request_draft=pull_request.get("draft"),
         )

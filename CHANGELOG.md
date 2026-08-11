@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.10.0 — 2026-08-12
+
+- Replace the opaque Advisor packet with a hash-bound, process-local review
+  session contract that enforces predecessor chains, monotonic versions, five
+  rounds, typed task-closure findings, `C` backlog separation, and terminal
+  convergence halts before model execution or Executor release.
+- Require Claude Opus 5's exact ten-key first-party runtime identity, record
+  bounded runtime attestation, and raise the Claude Code minimum to 2.1.220.
+- Run every Claude invocation in a new process group and terminate, escalate,
+  and reap the complete group on timeout; the MCP timeout retains teardown
+  reserve beyond the child bound.
+- Compact the generated policy while preserving closure, convergence,
+  five-round, user-authority, and current-task best-effort controls. Lead
+  bundled Advisor setup with Opus while preserving omission as `advisor: none`.
+- Add schema-3 exact-head live Opus release qualification. Local fake-model or
+  configured-route readiness remains non-live evidence and cannot satisfy it.
+
 ## 0.9.8 — 2026-08-11
 
 - Reduce the bounded Advisor approval loop from eight total reviews to five.

@@ -11,13 +11,17 @@ no-tools/no-persistence process.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 from pathlib import Path
+import re
+import signal
 import stat
 import shutil
 import subprocess
 import sys
+import time
 from typing import Any, Literal
 
 import routing_state
@@ -49,11 +53,36 @@ ALLOWED_RUNTIME_MODELS_BY_PRIMARY = {
     # Claude Code reports anything beyond the sealed primary.
     OPUS_MODEL: frozenset({OPUS_MODEL}),
 }
-CLAUDE_TIMEOUT_SECONDS = 600
+CLAUDE_TIMEOUT_SECONDS = 570
+PROCESS_TEARDOWN_GRACE_SECONDS = 1.0
+PROCESS_TEARDOWN_RESERVE_SECONDS = 20
 AUTH_TIMEOUT_SECONDS = 20
+CLAUDE_MIN_VERSION = (2, 1, 220)
 # Applies to the combined user-controlled text sent by one model operation.
 MAX_INPUT_CHARS = 200_000
 MAX_DIAGNOSTIC_OUTPUT_CHARS = 8_192
+MAX_REVIEW_SESSIONS = 128
+MAX_REVIEW_ROUNDS = 5
+SHA256_PATTERN = "^[0-9a-f]{64}$"
+REVIEW_REQUEST_FIELDS = (
+    "review_session_id",
+    "round_number",
+    "previous_review_sha256",
+    "original_scope_sha256",
+    "task_goal",
+    "approved_scope",
+    "non_goals",
+    "acceptance_criteria",
+    "safety_invariants",
+    "plan_version",
+    "plan_sha256",
+    "current_plan",
+    "changed_surface",
+    "findings_ledger",
+)
+# Process-local safety boundary. Values deliberately contain only bounded hashes,
+# versions, finding IDs, sizes, counters, and terminal state.
+_REVIEW_SESSIONS: dict[str, dict[str, Any]] = {}
 PLAN_REVIEW_SCHEMA = {
     "type": "object",
     "properties": {
@@ -61,9 +90,20 @@ PLAN_REVIEW_SCHEMA = {
             "type": "string",
             "enum": ["PLAN_APPROVED", "PLAN_REVISE"],
         },
-        "body": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "scope_status": {"type": "string", "enum": ["closed", "open"]},
+        "blocking_findings": {"type": "array", "items": {"type": "object"}},
+        "c_backlog": {"type": "array", "items": {"type": "object"}},
+        "new_scope_requests": {"type": "array", "items": {"type": "object"}},
     },
-    "required": ["signal", "body"],
+    "required": [
+        "signal",
+        "summary",
+        "scope_status",
+        "blocking_findings",
+        "c_backlog",
+        "new_scope_requests",
+    ],
     "additionalProperties": False,
 }
 SENSITIVE_ENV = {
@@ -125,9 +165,9 @@ STALE_BRIDGE_RECOVERY = (
 )
 
 ADVISOR_SYSTEM_PROMPT = """You are the configured Claude model acting only as a plan advisor to Codex's root orchestrator.
-Review the supplied self-contained packet for material correctness, missing constraints, unsafe sequencing, ownership conflicts, and verification gaps. Do not edit files, call tools, spawn agents, contact the Planner or executors, or attempt implementation.
+Optimize for closure of the supplied user-approved task, not global risk elimination. Review only the approved criteria and safety invariants. Classes A, A-uncertain, and B may block when evidenced and tied to an approved basis. Put optional hardening, refactors, theoretical edges, and reviewer-added criteria in non-blocking C backlog. Put proposed scope changes in non-blocking new_scope_requests. Do not edit, call tools, spawn, contact other seats, or implement.
 
-Return the required structured fields `signal` and `body`. Use signal PLAN_APPROVED only when no material gap is present. Use PLAN_REVISE when correction is needed. The body must be non-empty. For PLAN_REVISE, assign every material finding a stable, unique finding ID and give a concrete correction. On later rounds, preserve IDs from the supplied cumulative ledger. Ignore style preferences. Report only to the root orchestrator."""
+Return exactly signal, summary, scope_status, blocking_findings, c_backlog, and new_scope_requests under the supplied schema. PLAN_REVISE requires a valid blocker; PLAN_APPROVED requires none. Each blocker needs a stable ID, approved basis ID, evidence, concrete failure scenario, smallest sufficient correction, causal source/reference, superseded IDs, and any new evidence. Preserve IDs. A later new or reopened blocker needs new evidence or a changed-surface causal link. Report only to the root."""
 
 PLANNER_CREATE_SYSTEM_PROMPT = """You are the configured Claude model acting only as a plan author for Codex's root orchestrator.
 Create a concrete implementation plan from the supplied self-contained packet. Include constraints, ownership, sequencing, acceptance criteria, security and compatibility boundaries, and behavioral plus regression verification. Do not edit files, call tools, spawn agents, contact the Advisor or executors, or attempt implementation.
@@ -243,6 +283,18 @@ _STRUCTURED_FABLE_USAGE_LIMIT_MESSAGE = (
     "You've reached your Fable 5 limit. Run /usage-credits to continue or "
     "switch models with /model."
 )
+OPUS_USAGE_FIELDS = {
+    "inputTokens",
+    "outputTokens",
+    "cacheReadInputTokens",
+    "cacheCreationInputTokens",
+    "webSearchRequests",
+    "costUSD",
+    "contextWindow",
+    "maxOutputTokens",
+    "canonicalModel",
+    "provider",
+}
 
 
 class AdvisorError(RuntimeError):
@@ -443,21 +495,78 @@ def resolve_claude() -> Path:
     raise AdvisorError("Claude Code is not installed or `claude` is not on PATH.")
 
 
-def _run_json(command: list[str], *, timeout: int) -> dict[str, Any]:
+def _terminate_process_group(process: subprocess.Popen[str]) -> str:
+    if process.poll() is not None:
+        process.communicate()
+        return "completed"
     try:
-        result = subprocess.run(
+        if os.name == "nt":
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            os.killpg(process.pid, signal.SIGTERM)
+        process.communicate(timeout=PROCESS_TEARDOWN_GRACE_SECONDS)
+        return "terminated"
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            if os.name == "nt":
+                process.kill()
+            else:
+                os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.communicate()
+        return "killed"
+
+
+def _run_claude_process(
+    command: list[str],
+    *,
+    input_text: str | None,
+    timeout_seconds: float,
+    timeout_message: str,
+    start_error_message: str,
+    environment: dict[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], int, str]:
+    popen_options: dict[str, Any] = {}
+    if os.name == "nt":
+        popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_options["start_new_session"] = True
+    started = time.monotonic()
+    try:
+        process = subprocess.Popen(
             command,
-            env=sanitized_environment(),
+            env=environment if environment is not None else sanitized_environment(),
             text=True,
+            stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=timeout,
-            check=False,
+            **popen_options,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise AdvisorError("Claude Code authentication check timed out.") from exc
     except OSError as exc:
-        raise AdvisorError("Could not run Claude Code authentication check.") from exc
+        raise AdvisorError(start_error_message) from exc
+    try:
+        stdout, stderr = process.communicate(input=input_text, timeout=timeout_seconds)
+        termination_status = "completed"
+    except subprocess.TimeoutExpired as exc:
+        _terminate_process_group(process)
+        raise AdvisorError(timeout_message) from exc
+    elapsed_ms = max(0, round((time.monotonic() - started) * 1000))
+    return (
+        subprocess.CompletedProcess(command, process.returncode, stdout, stderr),
+        elapsed_ms,
+        termination_status,
+    )
+
+
+def _run_json(command: list[str], *, timeout: int) -> dict[str, Any]:
+    result, _elapsed_ms, _termination_status = _run_claude_process(
+        command,
+        input_text=None,
+        timeout_seconds=timeout,
+        timeout_message="Claude Code authentication check timed out.",
+        start_error_message="Could not run Claude Code authentication check.",
+    )
     if result.returncode != 0:
         raise _process_failure(result, authentication_check=True)
     try:
@@ -467,6 +576,26 @@ def _run_json(command: list[str], *, timeout: int) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise AdvisorError("Claude Code returned an unexpected JSON value.")
     return payload
+
+
+def _claude_version(executable: Path) -> str:
+    result, _elapsed_ms, _termination_status = _run_claude_process(
+        [str(executable), "--version"],
+        input_text=None,
+        timeout_seconds=AUTH_TIMEOUT_SECONDS,
+        timeout_message="Claude Code version check timed out.",
+        start_error_message="Could not run Claude Code version check.",
+    )
+    if result.returncode != 0:
+        raise _process_failure(result, authentication_check=True)
+    match = re.fullmatch(r"\s*(\d+)\.(\d+)\.(\d+)(?:\s+\(Claude Code\))?\s*", result.stdout)
+    if match is None:
+        raise AdvisorError("Claude Code returned an unparseable version.")
+    version = tuple(int(part) for part in match.groups())
+    if version < CLAUDE_MIN_VERSION:
+        required = ".".join(map(str, CLAUDE_MIN_VERSION))
+        raise AdvisorError(f"Claude Code {required} or newer is required.")
+    return ".".join(map(str, version))
 
 
 def check_claude_auth(claude: Path | None = None) -> dict[str, str]:
@@ -594,6 +723,10 @@ def _validate_runtime_models(
     for model_usage in usage.values():
         if not isinstance(model_usage, dict) or not model_usage:
             raise AdvisorError("Runtime metadata has a malformed modelUsage value.")
+        if primary_model == OPUS_MODEL and set(model_usage) != OPUS_USAGE_FIELDS:
+            raise AdvisorError(
+                "Claude Opus runtime metadata must contain the exact ten-key identity record."
+            )
         present_identity_fields = opus_identity_fields.intersection(model_usage)
         if present_identity_fields and (
             primary_model != OPUS_MODEL
@@ -674,26 +807,30 @@ def _normalize_model_payload(
     return selected
 
 
-def _validate_review_output(value: Any, *, display_name: str) -> dict[str, str]:
+def _validate_review_output(value: Any, *, display_name: str) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != set(PLAN_REVIEW_SCHEMA["required"]):
         raise AdvisorError(
             f"{display_name} plan review returned invalid structured output."
         )
     signal = value.get("signal")
-    body = value.get("body")
     if (
         not isinstance(signal, str)
         or signal not in {"PLAN_APPROVED", "PLAN_REVISE"}
-        or not isinstance(body, str)
-        or not body.strip()
+        or not isinstance(value.get("summary"), str)
+        or not value["summary"].strip()
+        or value.get("scope_status") not in {"closed", "open"}
+        or any(
+            not isinstance(value.get(field), list)
+            for field in ("blocking_findings", "c_backlog", "new_scope_requests")
+        )
     ):
         raise AdvisorError(
             f"{display_name} plan review returned invalid structured output."
         )
-    return {"signal": signal, "body": body.strip()}
+    return {**value, "summary": value["summary"].strip()}
 
 
-def _review_response(payload: dict[str, Any], *, display_name: str) -> tuple[str, str]:
+def _review_response(payload: dict[str, Any], *, display_name: str) -> tuple[dict[str, Any], str]:
     structured_present = "structured_output" in payload
     result_present = "result" in payload
     structured = (
@@ -704,7 +841,7 @@ def _review_response(payload: dict[str, Any], *, display_name: str) -> tuple[str
         if structured_present
         else None
     )
-    legacy: dict[str, str] | None = None
+    legacy: dict[str, Any] | None = None
     if result_present:
         raw_result = payload.get("result")
         if not isinstance(raw_result, str):
@@ -733,7 +870,7 @@ def _review_response(payload: dict[str, Any], *, display_name: str) -> tuple[str
         )
     selected = structured or legacy
     assert selected is not None
-    return selected["signal"], f"{selected['signal']}\n{selected['body']}"
+    return selected, _canonical_json(selected)
 
 
 def _invoke_fable(
@@ -743,7 +880,7 @@ def _invoke_fable(
     prompt: str,
     system_prompt: str,
     allowed_signals: set[str],
-) -> tuple[str, str, dict[str, str], dict[str, str], list[str]]:
+) -> tuple[Any, str, dict[str, str], dict[str, str], list[str], dict[str, Any]]:
     """Run one stateless, seat-authorized, no-tools Claude operation."""
 
     route = load_fable_route(seat=seat)
@@ -752,6 +889,7 @@ def _invoke_fable(
     )
     claude = resolve_claude()
     auth = check_claude_auth(claude)
+    claude_version = _claude_version(claude)
     command = [
         str(claude),
         "--print",
@@ -783,21 +921,13 @@ def _invoke_fable(
                 ),
             )
         )
-    try:
-        result = subprocess.run(
-            command,
-            input=prompt,
-            env=sanitized_environment(),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=CLAUDE_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise AdvisorError(f"{display_name} {operation} timed out.") from exc
-    except OSError as exc:
-        raise AdvisorError(f"Could not start {display_name} {operation}.") from exc
+    result, elapsed_ms, termination_status = _run_claude_process(
+        command,
+        input_text=prompt,
+        timeout_seconds=CLAUDE_TIMEOUT_SECONDS,
+        timeout_message=f"{display_name} {operation} timed out.",
+        start_error_message=f"Could not start {display_name} {operation}.",
+    )
     if result.returncode != 0:
         raise _process_failure(result, authentication_check=False)
     try:
@@ -813,7 +943,8 @@ def _invoke_fable(
     # returning any model-authored plan/review content.
     used_models = _validate_runtime_models(payload.get("modelUsage"), route["model"])
     if operation == "plan review":
-        signal, response = _review_response(payload, display_name=display_name)
+        decision, response = _review_response(payload, display_name=display_name)
+        signal = decision["signal"]
     else:
         if "structured_output" in payload or not isinstance(
             payload.get("result"), str
@@ -823,6 +954,7 @@ def _invoke_fable(
             )
         response = payload["result"].strip()
         signal = _first_non_empty_line(response)
+        decision = signal
     if signal not in allowed_signals:
         if operation == "plan review":
             raise AdvisorError(
@@ -832,7 +964,18 @@ def _invoke_fable(
         raise AdvisorError(
             f"{display_name} {operation} omitted the required {expected} signal."
         )
-    return signal, response, route, auth, used_models
+    runtime_attestation = {
+        "claude_code_version": claude_version,
+        "configured_model": route["model"],
+        "canonical_model": route["model"],
+        "provider": auth["api_provider"],
+        "effort": route["effort"],
+        "used_models": used_models,
+        "elapsed_ms": elapsed_ms,
+        "timeout_seconds": CLAUDE_TIMEOUT_SECONDS,
+        "termination_status": termination_status,
+    }
+    return decision, response, route, auth, used_models, runtime_attestation
 
 
 def _base_result(
@@ -850,7 +993,7 @@ def _base_result(
 
 def create_plan(packet: str) -> dict[str, Any]:
     values = _validate_inputs("plan creation", packet=packet)
-    signal, response, route, auth, used_models = _invoke_fable(
+    signal, response, route, auth, used_models, _runtime = _invoke_fable(
         operation="plan creation",
         seat="planner",
         prompt=values["packet"],
@@ -909,7 +1052,7 @@ def revise_plan(
             "# COMPACT_CUMULATIVE_FINDINGS_HISTORY\n" + values["history"],
         )
     )
-    signal, response, route, auth, used_models = _invoke_fable(
+    signal, response, route, auth, used_models, _runtime = _invoke_fable(
         operation="plan revision",
         seat="planner",
         prompt=prompt,
@@ -924,20 +1067,477 @@ def revise_plan(
     }
 
 
-def review_plan(packet: str) -> dict[str, Any]:
-    values = _validate_inputs("plan review", packet=packet)
-    signal, response, route, auth, used_models = _invoke_fable(
+def _canonical_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _stable_id(value: Any, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 128
+        or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-" for character in value)
+    ):
+        raise AdvisorError(f"`{field}` must be a bounded stable ID.")
+    return value
+
+
+def _bounded_string(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > MAX_INPUT_CHARS:
+        raise AdvisorError(f"`{field}` must be a bounded non-empty string.")
+    return value
+
+
+def _string_array(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list) or len(value) > 100:
+        raise AdvisorError(f"`{field}` must be a bounded string array.")
+    result: list[str] = []
+    for index, item in enumerate(value):
+        result.append(_bounded_string(item, f"{field}[{index}]"))
+    return result
+
+
+def _basis_array(value: Any, field: str) -> list[dict[str, str]]:
+    if not isinstance(value, list) or not 1 <= len(value) <= 100:
+        raise AdvisorError(f"`{field}` must be a non-empty bounded array.")
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict) or set(item) != {"id", "description"}:
+            raise AdvisorError(f"`{field}[{index}]` has invalid fields.")
+        basis_id = _stable_id(item["id"], f"{field}[{index}].id")
+        if basis_id in seen:
+            raise AdvisorError(f"`{field}` contains a duplicate stable ID.")
+        seen.add(basis_id)
+        result.append(
+            {
+                "id": basis_id,
+                "description": _bounded_string(
+                    item["description"], f"{field}[{index}].description"
+                ),
+            }
+        )
+    return result
+
+
+def _validate_review_request(
+    *,
+    review_session_id: Any,
+    round_number: Any,
+    previous_review_sha256: Any,
+    original_scope_sha256: Any,
+    task_goal: Any,
+    approved_scope: Any,
+    non_goals: Any,
+    acceptance_criteria: Any,
+    safety_invariants: Any,
+    plan_version: Any,
+    plan_sha256: Any,
+    current_plan: Any,
+    changed_surface: Any,
+    findings_ledger: Any,
+) -> dict[str, Any]:
+    session_id = _stable_id(review_session_id, "review_session_id")
+    if type(round_number) is not int or not 1 <= round_number <= MAX_REVIEW_ROUNDS:
+        raise AdvisorError("Advisor review round must be between one and five.")
+    if type(plan_version) is not int or plan_version < 1:
+        raise AdvisorError("Advisor plan version must be a positive integer.")
+    if not isinstance(previous_review_sha256, str) or (
+        previous_review_sha256
+        and (
+            len(previous_review_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in previous_review_sha256)
+        )
+    ):
+        raise AdvisorError("Previous review hash is malformed.")
+    if not isinstance(original_scope_sha256, str) or len(original_scope_sha256) != 64:
+        raise AdvisorError("Original scope hash is malformed.")
+    if not isinstance(plan_sha256, str) or len(plan_sha256) != 64:
+        raise AdvisorError("Plan hash is malformed.")
+
+    criteria = _basis_array(acceptance_criteria, "acceptance_criteria")
+    invariants = _basis_array(safety_invariants, "safety_invariants")
+    basis_ids = {item["id"] for item in (*criteria, *invariants)}
+    changed = _string_array(changed_surface, "changed_surface")
+    if len(set(changed)) != len(changed) or not set(changed).issubset(basis_ids):
+        raise AdvisorError("Changed surface contains an unknown or duplicate basis ID.")
+    if not isinstance(findings_ledger, list) or len(findings_ledger) > 500:
+        raise AdvisorError("Findings ledger must be a bounded array.")
+    for index, item in enumerate(findings_ledger):
+        if not isinstance(item, dict):
+            raise AdvisorError(f"Findings ledger item {index} must be an object.")
+
+    request = {
+        "review_session_id": session_id,
+        "round_number": round_number,
+        "previous_review_sha256": previous_review_sha256,
+        "original_scope_sha256": original_scope_sha256,
+        "task_goal": _bounded_string(task_goal, "task_goal"),
+        "approved_scope": _string_array(approved_scope, "approved_scope"),
+        "non_goals": _string_array(non_goals, "non_goals"),
+        "acceptance_criteria": criteria,
+        "safety_invariants": invariants,
+        "plan_version": plan_version,
+        "plan_sha256": plan_sha256,
+        "current_plan": _bounded_string(current_plan, "current_plan"),
+        "changed_surface": changed,
+        "findings_ledger": findings_ledger,
+    }
+    if len(_canonical_json(request)) > MAX_INPUT_CHARS:
+        raise AdvisorError("Plan review input exceeds the combined character limit.")
+
+    scope = {
+        "task_goal": request["task_goal"],
+        "approved_scope": request["approved_scope"],
+        "non_goals": request["non_goals"],
+        "acceptance_criteria": criteria,
+        "safety_invariants": invariants,
+    }
+    if _sha256_text(_canonical_json(scope)) != original_scope_sha256:
+        raise AdvisorError("Original scope hash does not match the supplied scope.")
+    if _sha256_text(request["current_plan"]) != plan_sha256:
+        raise AdvisorError("Plan hash does not match the supplied current plan.")
+    return request
+
+
+def _validate_session_predecessor(request: dict[str, Any]) -> dict[str, Any] | None:
+    session_id = request["review_session_id"]
+    round_number = request["round_number"]
+    state = _REVIEW_SESSIONS.get(session_id)
+    if round_number == 1:
+        if request["previous_review_sha256"]:
+            raise AdvisorError("Round one must begin with an empty predecessor hash.")
+        if state is not None:
+            raise AdvisorError("Advisor review round one cannot replay an existing session.")
+        if len(_REVIEW_SESSIONS) >= MAX_REVIEW_SESSIONS:
+            raise AdvisorError("Advisor review session capacity is exhausted.")
+        return None
+    if state is None:
+        raise AdvisorError("A bridge restart requires a new Advisor session at round one.")
+    if state["terminal"]:
+        raise AdvisorError("The Advisor review session is terminal.")
+    if round_number != state["round_number"] + 1:
+        raise AdvisorError("Advisor review rounds must be strictly sequential.")
+    if request["previous_review_sha256"] != state["previous_review_sha256"]:
+        raise AdvisorError("Advisor predecessor attestation does not match.")
+    if request["original_scope_sha256"] != state["scope_sha256"]:
+        raise AdvisorError("Advisor immutable scope hash changed during the session.")
+    if request["plan_version"] <= state["plan_version"]:
+        raise AdvisorError("Advisor plan version must increase monotonically.")
+    return state
+
+
+def _validate_review_result(
+    value: Any,
+    *,
+    request: dict[str, Any],
+    previous_state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    required = {
+        "signal",
+        "summary",
+        "scope_status",
+        "blocking_findings",
+        "c_backlog",
+        "new_scope_requests",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise AdvisorError("Claude plan review returned invalid structured output.")
+    if value["signal"] not in {"PLAN_APPROVED", "PLAN_REVISE"}:
+        raise AdvisorError("Claude plan review returned invalid structured output.")
+    if (
+        not isinstance(value["summary"], str)
+        or not value["summary"].strip()
+        or value["scope_status"] not in {"closed", "open"}
+        or any(
+            not isinstance(value[field], list) or len(value[field]) > 500
+            for field in ("blocking_findings", "c_backlog", "new_scope_requests")
+        )
+    ):
+        raise AdvisorError("Claude plan review returned invalid structured output.")
+    basis_ids = {
+        item["id"]
+        for item in (*request["acceptance_criteria"], *request["safety_invariants"])
+    }
+    prior_ids = set(previous_state["all_finding_ids"]) if previous_state else set()
+    prior_blocking_ids = (
+        set(previous_state["blocking_ids"]) if previous_state else set()
+    )
+    seen_ids: set[str] = set()
+    normalized_blockers: list[dict[str, Any]] = []
+    for index, item in enumerate(value["blocking_findings"]):
+        fields = {
+            "id",
+            "class",
+            "basis_id",
+            "evidence",
+            "failure_scenario",
+            "smallest_correction",
+            "causal_source",
+            "causal_reference",
+            "supersedes_ids",
+            "new_evidence",
+        }
+        if not isinstance(item, dict) or set(item) != fields:
+            raise AdvisorError(f"Blocking finding {index} has invalid fields.")
+        finding_id = _stable_id(item["id"], f"blocking_findings[{index}].id")
+        if finding_id in seen_ids:
+            raise AdvisorError("Claude plan review contains duplicate finding IDs.")
+        seen_ids.add(finding_id)
+        if item["class"] not in {"A", "A-uncertain", "B"}:
+            raise AdvisorError("Claude plan review contains an invalid blocking class.")
+        if item["basis_id"] not in basis_ids:
+            raise AdvisorError("Claude plan review contains an unknown basis ID.")
+        evidence = _string_array(item["evidence"], "evidence")
+        if not evidence:
+            raise AdvisorError("Blocking finding evidence must be non-empty.")
+        failure_scenario = _bounded_string(
+            item["failure_scenario"], "failure scenario"
+        )
+        smallest_correction = _bounded_string(
+            item["smallest_correction"], "smallest correction"
+        )
+        causal_source = item["causal_source"]
+        if causal_source not in {"initial_scope", "new_evidence", "changed_surface"}:
+            raise AdvisorError("Blocking finding has an invalid causal source.")
+        causal_reference = _stable_id(
+            item["causal_reference"], "blocking finding causal reference"
+        )
+        supersedes = _string_array(item["supersedes_ids"], "supersedes IDs")
+        if len(set(supersedes)) != len(supersedes) or not set(supersedes).issubset(
+            prior_ids
+        ):
+            raise AdvisorError("Blocking finding supersedes an unknown finding ID.")
+        new_evidence = _string_array(item["new_evidence"], "new evidence")
+        if previous_state is not None and finding_id not in prior_blocking_ids:
+            evidenced = causal_source == "new_evidence" and bool(new_evidence)
+            changed = (
+                causal_source == "changed_surface"
+                and causal_reference in request["changed_surface"]
+            )
+            if not (evidenced or changed):
+                raise AdvisorError(
+                    "A later-round finding requires new evidence or a changed-surface cause."
+                )
+        normalized_blockers.append(
+            {
+                "id": finding_id,
+                "class": item["class"],
+                "basis_id": item["basis_id"],
+                "evidence": evidence,
+                "failure_scenario": failure_scenario,
+                "smallest_correction": smallest_correction,
+                "causal_source": causal_source,
+                "causal_reference": causal_reference,
+                "supersedes_ids": supersedes,
+                "new_evidence": new_evidence,
+            }
+        )
+
+    normalized_c: list[dict[str, Any]] = []
+    for index, item in enumerate(value["c_backlog"]):
+        if not isinstance(item, dict) or set(item) != {"id", "summary", "basis_id"}:
+            raise AdvisorError(f"C backlog item {index} has invalid fields.")
+        finding_id = _stable_id(item["id"], f"c_backlog[{index}].id")
+        if finding_id in seen_ids:
+            raise AdvisorError("Claude plan review contains duplicate finding IDs.")
+        seen_ids.add(finding_id)
+        basis_id = item["basis_id"]
+        if basis_id is not None and basis_id not in basis_ids:
+            raise AdvisorError("C backlog item contains an unknown basis ID.")
+        normalized_c.append(
+            {
+                "id": finding_id,
+                "summary": _bounded_string(item["summary"], "C backlog summary"),
+                "basis_id": basis_id,
+            }
+        )
+
+    normalized_scope: list[dict[str, str]] = []
+    for index, item in enumerate(value["new_scope_requests"]):
+        if not isinstance(item, dict) or set(item) != {"id", "summary"}:
+            raise AdvisorError(f"New scope request {index} has invalid fields.")
+        request_id = _stable_id(item["id"], f"new_scope_requests[{index}].id")
+        if request_id in seen_ids:
+            raise AdvisorError("Claude plan review contains duplicate finding IDs.")
+        seen_ids.add(request_id)
+        normalized_scope.append(
+            {
+                "id": request_id,
+                "summary": _bounded_string(
+                    item["summary"], "new scope request summary"
+                ),
+            }
+        )
+
+    if value["signal"] == "PLAN_REVISE" and not normalized_blockers:
+        raise AdvisorError("PLAN_REVISE requires at least one blocking finding.")
+    if value["signal"] == "PLAN_APPROVED" and normalized_blockers:
+        raise AdvisorError("PLAN_APPROVED cannot include blocking findings.")
+    if value["signal"] == "PLAN_APPROVED" and value["scope_status"] != "closed":
+        raise AdvisorError("PLAN_APPROVED requires closed approved scope.")
+    return {
+        "signal": value["signal"],
+        "summary": value["summary"].strip(),
+        "scope_status": value["scope_status"],
+        "blocking_findings": normalized_blockers,
+        "c_backlog": normalized_c,
+        "new_scope_requests": normalized_scope,
+    }
+
+
+def review_plan(
+    *,
+    review_session_id: Any,
+    round_number: Any,
+    previous_review_sha256: Any,
+    original_scope_sha256: Any,
+    task_goal: Any,
+    approved_scope: Any,
+    non_goals: Any,
+    acceptance_criteria: Any,
+    safety_invariants: Any,
+    plan_version: Any,
+    plan_sha256: Any,
+    current_plan: Any,
+    changed_surface: Any,
+    findings_ledger: Any,
+) -> dict[str, Any]:
+    request = _validate_review_request(
+        review_session_id=review_session_id,
+        round_number=round_number,
+        previous_review_sha256=previous_review_sha256,
+        original_scope_sha256=original_scope_sha256,
+        task_goal=task_goal,
+        approved_scope=approved_scope,
+        non_goals=non_goals,
+        acceptance_criteria=acceptance_criteria,
+        safety_invariants=safety_invariants,
+        plan_version=plan_version,
+        plan_sha256=plan_sha256,
+        current_plan=current_plan,
+        changed_surface=changed_surface,
+        findings_ledger=findings_ledger,
+    )
+    previous_state = _validate_session_predecessor(request)
+    invocation = _invoke_fable(
         operation="plan review",
         seat="advisor",
-        prompt=values["packet"],
+        prompt=_canonical_json(request),
         system_prompt=ADVISOR_SYSTEM_PROMPT,
         allowed_signals={"PLAN_APPROVED", "PLAN_REVISE"},
     )
-    return {
-        "decision": signal,
-        "review": response,
+    if len(invocation) != 6:
+        raise AdvisorError("Claude plan review omitted runtime attestation.")
+    provider_value, _response, route, auth, used_models, runtime_attestation = invocation
+    provider = _validate_review_result(
+        provider_value,
+        request=request,
+        previous_state=previous_state,
+    )
+    blocking_ids = [
+        item.get("id")
+        for item in provider["blocking_findings"]
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    ]
+    current_blockers = set(blocking_ids)
+    prior_blockers = (
+        set(previous_state["blocking_ids"]) if previous_state is not None else set()
+    )
+    new_blockers = current_blockers - prior_blockers
+    carried_blockers = current_blockers.intersection(prior_blockers)
+    closed_blockers = prior_blockers - current_blockers
+    prior_size = previous_state["plan_size"] if previous_state is not None else 0
+    plan_growth_ratio = (
+        (len(current_plan) - prior_size) / prior_size if prior_size else 0.0
+    )
+    high_closure_with_new = bool(prior_blockers) and (
+        len(closed_blockers) / len(prior_blockers) >= 0.8
+        and bool(new_blockers)
+    )
+    consecutive_non_converging = (
+        previous_state["non_converging_rounds"] + 1
+        if previous_state is not None and high_closure_with_new
+        else 0
+    )
+    stop_reason: str | None = None
+    if provider["signal"] == "PLAN_APPROVED":
+        stop_reason = "PLAN_APPROVED"
+    elif consecutive_non_converging >= 2:
+        stop_reason = "NON_CONVERGING_REVIEW"
+    elif plan_growth_ratio > 0.25 and new_blockers and not changed_surface:
+        stop_reason = "UNAUTHORIZED_PLAN_GROWTH"
+    elif round_number == MAX_REVIEW_ROUNDS:
+        stop_reason = "MAX_REVIEW_ROUNDS"
+    terminal = stop_reason is not None
+    blocking_by_class = {
+        finding_class: sum(
+            finding["class"] == finding_class
+            for finding in provider["blocking_findings"]
+        )
+        for finding_class in ("A", "A-uncertain", "B")
+        if any(
+            finding["class"] == finding_class
+            for finding in provider["blocking_findings"]
+        )
+    }
+    convergence = {
+        "blocking_by_class": blocking_by_class,
+        "new_blocker_count": len(new_blockers),
+        "closed_blocker_count": len(closed_blockers),
+        "carried_blocker_count": len(carried_blockers),
+        "plan_growth_ratio": plan_growth_ratio,
+        "consecutive_non_converging_rounds": consecutive_non_converging,
+    }
+    result: dict[str, Any] = {
+        "decision": provider["signal"],
+        "summary": provider["summary"],
+        "scope_status": provider["scope_status"],
+        "blocking_findings": provider["blocking_findings"],
+        "c_backlog": provider["c_backlog"],
+        "new_scope_requests": provider["new_scope_requests"],
+        "review_session": {
+            "id": review_session_id,
+            "round_number": round_number,
+            "plan_version": plan_version,
+            "original_scope_sha256": original_scope_sha256,
+            "plan_sha256": plan_sha256,
+            "previous_review_sha256": previous_review_sha256,
+        },
+        "convergence": convergence,
+        "runtime_attestation": runtime_attestation,
+        "terminal": terminal,
+        "stop_reason": stop_reason,
         **_base_result(route=route, auth=auth, used_models=used_models),
     }
+    result["review_attestation_sha256"] = _sha256_text(_canonical_json(result))
+    all_finding_ids = {
+        item["id"] for item in (*provider["blocking_findings"], *provider["c_backlog"])
+    }
+    if previous_state is not None:
+        all_finding_ids.update(previous_state["all_finding_ids"])
+    _REVIEW_SESSIONS[review_session_id] = {
+        "round_number": round_number,
+        "plan_version": plan_version,
+        "previous_review_sha256": result["review_attestation_sha256"],
+        "terminal": terminal,
+        "scope_sha256": original_scope_sha256,
+        "plan_sha256": plan_sha256,
+        "plan_size": len(current_plan),
+        "blocking_ids": sorted(blocking_ids),
+        "all_finding_ids": sorted(all_finding_ids),
+        "non_converging_rounds": consecutive_non_converging,
+    }
+    return result
 
 
 def _configured_fable_seats() -> dict[str, dict[str, str]]:
@@ -981,13 +1581,25 @@ def status() -> dict[str, Any]:
 
 
 def tool_definitions() -> list[dict[str, Any]]:
-    annotations = {
+    stateless_annotations = {
         "readOnlyHint": True,
         "destructiveHint": False,
         "idempotentHint": True,
         "openWorldHint": True,
     }
+    review_annotations = {**stateless_annotations, "idempotentHint": False}
     string_property = {"type": "string", "maxLength": MAX_INPUT_CHARS}
+    stable_id = {"type": "string", "minLength": 1, "maxLength": 128}
+    hash_property = {"type": "string", "pattern": SHA256_PATTERN}
+    scope_item = {
+        "type": "object",
+        "properties": {
+            "id": stable_id,
+            "description": string_property,
+        },
+        "required": ["id", "description"],
+        "additionalProperties": False,
+    }
     return [
         {
             "name": "create_plan",
@@ -999,7 +1611,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "required": ["packet"],
                 "additionalProperties": False,
             },
-            "annotations": annotations,
+            "annotations": stateless_annotations,
         },
         {
             "name": "revise_plan",
@@ -1016,26 +1628,41 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "required": ["task", "current_plan", "critique", "history"],
                 "additionalProperties": False,
             },
-            "annotations": annotations,
+            "annotations": stateless_annotations,
         },
         {
             "name": "review_plan",
             "title": "Review a plan with the configured Claude model",
-            "description": "Review one self-contained packet with the configured Claude Advisor.",
+            "description": "Review one structured, hash-bound round with the configured Claude Advisor.",
             "inputSchema": {
                 "type": "object",
-                "properties": {"packet": {**string_property, "description": "Complete context, plan, risks, slices, and checks."}},
-                "required": ["packet"],
+                "properties": {
+                    "review_session_id": stable_id,
+                    "round_number": {"type": "integer", "minimum": 1, "maximum": MAX_REVIEW_ROUNDS},
+                    "previous_review_sha256": {"type": "string", "pattern": "^(?:|[0-9a-f]{64})$"},
+                    "original_scope_sha256": hash_property,
+                    "task_goal": string_property,
+                    "approved_scope": {"type": "array", "items": string_property, "maxItems": 100},
+                    "non_goals": {"type": "array", "items": string_property, "maxItems": 100},
+                    "acceptance_criteria": {"type": "array", "items": scope_item, "minItems": 1, "maxItems": 100},
+                    "safety_invariants": {"type": "array", "items": scope_item, "minItems": 1, "maxItems": 100},
+                    "plan_version": {"type": "integer", "minimum": 1},
+                    "plan_sha256": hash_property,
+                    "current_plan": string_property,
+                    "changed_surface": {"type": "array", "items": stable_id, "maxItems": 100, "uniqueItems": True},
+                    "findings_ledger": {"type": "array", "items": {"type": "object"}, "maxItems": 500},
+                },
+                "required": list(REVIEW_REQUEST_FIELDS),
                 "additionalProperties": False,
             },
-            "annotations": annotations,
+            "annotations": review_annotations,
         },
         {
             "name": "status",
             "title": "Check bundled Claude Planner and Advisor status",
             "description": "Check configured Claude seats and first-party login without a model call.",
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
-            "annotations": annotations,
+            "annotations": stateless_annotations,
         },
     ]
 
@@ -1095,8 +1722,8 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
                     )
                 )
             elif name == "review_plan":
-                args = _tool_arguments(arguments, {"packet"})
-                result = _tool_result(review_plan(args.get("packet")))
+                args = _tool_arguments(arguments, set(REVIEW_REQUEST_FIELDS))
+                result = _tool_result(review_plan(**args))
             elif name == "status":
                 _tool_arguments(arguments, set())
                 result = _tool_result(status())

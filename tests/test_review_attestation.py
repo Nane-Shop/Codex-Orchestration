@@ -35,6 +35,27 @@ def runtime_probe(
     return value
 
 
+def opus_runtime_qualification(
+    *,
+    status: str = "pending",
+    tested_head_sha: str | None = None,
+    evidence: str = "Exact live Opus qualification awaits authorization",
+    **updates: object,
+) -> dict[str, object]:
+    value: dict[str, object] = {
+        "status": status,
+        "provider": "firstParty",
+        "configured_model": "claude-opus-5",
+        "canonical_model": "claude-opus-5",
+        "claude_code_version": "2.1.220",
+        "effort": "high",
+        "tested_head_sha": tested_head_sha,
+        "evidence": evidence,
+    }
+    value.update(updates)
+    return value
+
+
 def body(**updates: object) -> str:
     value: dict[str, object] = {
         "schema": 1,
@@ -87,6 +108,88 @@ def event(
 
 
 class ReviewAttestationTests(unittest.TestCase):
+    def test_advisor_bridge_requires_schema_3_opus_runtime_qualification(self) -> None:
+        bridge = (
+            "plugins/codex-orchestration/skills/codex-orchestration/"
+            "scripts/fable_advisor_mcp.py"
+        )
+        with self.assertRaisesRegex(ATTESTATION.AttestationError, "schema 3"):
+            ATTESTATION.validate_pull_request_event(
+                event(body()),
+                expected_base=BASE,
+                expected_head=HEAD,
+                changed_paths=[bridge],
+            )
+
+        pending = body(
+            schema=3,
+            opus_runtime_qualification=opus_runtime_qualification(),
+        )
+        self.assertEqual(
+            ATTESTATION.validate_pull_request_event(
+                event(pending, draft=True),
+                expected_base=BASE,
+                expected_head=HEAD,
+                changed_paths=[bridge],
+            ),
+            "security-state",
+        )
+
+    def test_passed_opus_qualification_is_live_and_exact_head_bound(self) -> None:
+        bridge = (
+            "plugins/codex-orchestration/skills/codex-orchestration/"
+            "scripts/fable_advisor_mcp.py"
+        )
+        passed = body(
+            schema=3,
+            opus_runtime_qualification=opus_runtime_qualification(
+                status="passed",
+                tested_head_sha=HEAD,
+                evidence="Live first-party Opus invocation qualified exact head",
+            ),
+        )
+        self.assertEqual(
+            ATTESTATION.validate_pull_request_event(
+                event(passed, draft=False),
+                expected_base=BASE,
+                expected_head=HEAD,
+                changed_paths=[bridge],
+            ),
+            "security-state",
+        )
+        for qualification in (
+            opus_runtime_qualification(
+                status="passed",
+                tested_head_sha="c" * 40,
+                evidence="Live first-party Opus invocation qualified stale head",
+            ),
+            opus_runtime_qualification(
+                status="passed",
+                tested_head_sha=HEAD,
+                evidence="Local fake-model pass on exact head",
+            ),
+            opus_runtime_qualification(
+                status="passed",
+                tested_head_sha=HEAD,
+                evidence="Live first-party Opus invocation used an obsolete CLI",
+                claude_code_version="2.1.219",
+            ),
+        ):
+            with self.subTest(qualification=qualification), self.assertRaises(
+                ATTESTATION.AttestationError
+            ):
+                ATTESTATION.validate_pull_request_event(
+                    event(
+                        body(
+                            schema=3,
+                            opus_runtime_qualification=qualification,
+                        ),
+                        draft=False,
+                    ),
+                    expected_base=BASE,
+                    expected_head=HEAD,
+                    changed_paths=[bridge],
+                )
     def test_runtime_probe_path_is_the_packaged_openrouter_manifest(self) -> None:
         expected = (
             "plugins/codex-orchestration/skills/codex-orchestration/"

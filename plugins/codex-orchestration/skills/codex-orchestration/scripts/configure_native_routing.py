@@ -51,7 +51,7 @@ FABLE_DEFAULT_EFFORT = "high"
 FABLE_EFFORT_CHOICES = ("low", "medium", "high", "xhigh", "max")
 FABLE_EFFORT_ALIASES = {"ultra": "max"}
 OPUS_DEFAULT_EFFORT = "high"
-OPUS_MIN_CLAUDE_VERSION = (2, 1, 219)
+OPUS_MIN_CLAUDE_VERSION = (2, 1, 220)
 FABLE_SERVERS = {
     "fable-advisor-python3": ("python3", []),
     "fable-advisor-python": ("python", []),
@@ -457,7 +457,7 @@ class AppServer:
                     "clientInfo": {
                         "name": "codex_orchestration_installer",
                         "title": "Codex Orchestration Installer",
-                        "version": "0.9.8",
+                        "version": "0.10.0",
                     },
                     "capabilities": {"experimentalApi": True},
                 },
@@ -1153,20 +1153,15 @@ def build_policy(
         else "Configured custom agents and MCP seats own their provider routes."
     )
     planner_mode = (
-        "When a plan is needed, the configured Planner drafts it and handles any "
-        "Advisor-requested revision. The root supplies a self-contained packet, owns "
-        "the canonical plan and version, validates every result, and decides whether "
-        "the work is simple enough not to require a plan."
+        "When needed, the configured Planner drafts and revises the plan. The root "
+        "supplies bounded context, owns the canonical version, and validates results."
         if planner is not None
         else "No Planner is configured. The root drafts and revises every plan."
     )
     advisor_mode = (
-        "For a non-trivial plan, the root sends a fresh self-contained review call "
-        "to the configured Advisor before Executor work. PLAN_APPROVED ends review "
-        "early. PLAN_REVISE returns the canonical current plan and version, the "
-        "latest critique, and the cumulative findings ledger to the same configured "
-        "Planner route, or to the root when Planner is omitted, then reviews the "
-        "revised plan again. There may be at most "
+        "For a non-trivial plan, the root reviews task closure before Executor work. "
+        "PLAN_APPROVED ends review early; PLAN_REVISE returns to the Planner, or root "
+        "when Planner is omitted. There may be at most "
         f"{advisor_review_limit} total Advisor reviews."
         if advisor is not None
         else (
@@ -1177,14 +1172,10 @@ def build_policy(
         )
     )
     designer_mode = (
-        "After any required plan approval, the root may send bounded visual, UX, "
-        "interaction, information-architecture, or design-system work to the "
-        "configured Designer. The root supplies approved requirements, exact "
-        "deliverables, constraints, and any owned design artifacts. Designer may "
-        "edit only explicitly delegated design artifacts; otherwise it returns a "
-        "design handoff. It does not revise the canonical plan, change implementation "
-        "code, or release Executor. The root validates the handoff and decides what "
-        "Executor receives."
+        "After approval, the root may send bounded design work to the configured "
+        "Designer with approved requirements and owned design artifacts. Designer "
+        "may edit only those artifacts and cannot revise the plan, implementation, "
+        "or release Executor."
         if designer is not None
         else (
             "No Designer is configured. The root owns design decisions or delegates "
@@ -1194,7 +1185,7 @@ def build_policy(
     mode = f"""{MANAGED_MARKER}
 This adds model routing to Codex's existing multi-agent flow; it is not a second scheduler.
 
-If you are the root task model, you are the orchestrator. Own intent, planning, architecture, decomposition, delegation, integration, review, final verification, and the user-facing answer. Codex still decides whether a plan or subagent helps, how many independent slices exist, and what can run safely in parallel. Keep simple, tightly coupled, context-heavy, or root-owned work with the root. Do not delegate merely to prove the policy is active.
+If you are the root task model, you are the orchestrator. Own intent, planning, delegation, integration, verification, and the user-facing answer. Codex still decides whether a plan or subagent helps; keep tightly coupled or root-owned work with the root.
 
 {planner_mode}
 
@@ -1202,15 +1193,15 @@ If you are the root task model, you are the orchestrator. Own intent, planning, 
 
 {designer_mode}
 
-The root owns the plan version, cumulative findings ledger, review count, validation, adjudication, and release to Executor. There is no Finalizer seat. For Advisor rounds two through {advisor_review_limit}, send only the current plan and version plus a compact cumulative ledger, not prior transcripts. Ask the Advisor to confirm or contest dispositions without blindly repeating accepted findings. Reject a stale plan version or an invalid or incomplete ledger and halt before Executor.
+The runtime review contract is authoritative; do not duplicate its schema in prose. The root owns plan version, ledger, review count, validation, and release. There is no Finalizer seat. For Advisor rounds two through {advisor_review_limit}, send only the current plan and version plus a compact cumulative ledger, not prior transcripts. Reject a stale plan version or an invalid or incomplete ledger.
 
-On PLAN_REVISE, record the latest finding IDs before revision. After the Planner returns, validate and merge each INCORPORATED or reasoned REJECTED disposition into the cumulative ledger before another Advisor call. A round-{advisor_review_limit} PLAN_REVISE halts before Executor and produces a non-approval artifact containing the latest plan and version, full ledger, latest findings, and choices available to the user. It must not claim approval. Any required Planner or Advisor route failure also halts before Executor. Only an explicit current-task best-effort instruction changes failure handling: Planner failure permits the root to take over planning for the remaining rounds; Advisor failure may proceed only with the result labeled NOT_ADVISOR_APPROVED. No best-effort setting is persisted.
+On PLAN_REVISE, merge validated dispositions before another review. Only approved criteria and safety invariants block; reviewer-added hardening is `C` backlog and scope requests need user authority. Honor runtime convergence and terminal halts. A round-{advisor_review_limit} PLAN_REVISE halts before Executor with a non-approval artifact. Route failure also halts. Only explicit current-task best-effort changes this: Planner failure permits the root to take over; Advisor failure may proceed only as NOT_ADVISOR_APPROVED. Never persist best-effort.
 
-When executor delegation materially improves speed, cost, quality, or context isolation, use only the configured executor route. Give each executor one bounded, self-contained packet with objective, relevant facts, constraints, owned files or read-only scope, dependencies, acceptance criteria, verification, and handoff format. Inspect every handoff, integrate it, and run final checks yourself.
+When executor delegation helps, use only the configured route and a bounded packet with objective, owned scope, criteria, checks, and handoff. Inspect, integrate, and verify every result.
 
-Explicit user instructions win, including no-subagents and task-local seat overrides. Persistent and task-local Planner and Advisor routes must remain distinct: reject the same direct model ID, the same custom-agent name, or more than one bundled Claude subscription seat. This policy does not create or change a Goal, weaken approvals, alter permissions, or force a worker count.
+Explicit user instructions win. This policy does not create or change a Goal. Persistent and task-local Planner and Advisor routes must remain distinct; this policy does not change permissions or force delegation.
 
-Planner and Advisor are policy-isolated, root-directed seats: they cannot contact each other, Designer, or Executors, spawn descendants, edit files, execute work, or release Executor. They return only to the root. Designer is also root-directed: it cannot contact Planner, Advisor, or Executor, spawn descendants, redesign the root plan, change implementation code, or release Executor. Designer may edit only explicitly delegated design artifacts. Bundled Claude MCP requests do not carry caller identity, so caller isolation is instruction-enforced even though the bridge itself disables tools and persistence. If you are a spawned child, stay inside the supplied packet, report only to the root, never call planning tools, and never spawn descendants. An Executor never redesigns the root plan or contacts Planner, Advisor, or Designer.
+Planner and Advisor are root-directed: they cannot contact each other, Designer, or Executors, spawn descendants, edit, execute, or release Executor. Designer is also root-directed and cannot contact other seats, spawn descendants, redesign the plan, change implementation code, or release Executor. Bundled MCP caller isolation is policy-enforced. Spawned children stay in their packet, report only to root, never call planning tools, and never spawn descendants.
 """
     if planner is not None and planner["kind"] in {
         "fable",

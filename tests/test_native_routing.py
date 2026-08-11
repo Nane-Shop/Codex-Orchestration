@@ -316,7 +316,7 @@ class NativeRoutingTests(unittest.TestCase):
                 )
                 raise SystemExit(0)
             if sys.argv[1:] == ["--version"]:
-                print("2.1.219 (Claude Code)")
+                print("2.1.220 (Claude Code)")
                 raise SystemExit(0)
             raise SystemExit(2)
             """,
@@ -391,7 +391,10 @@ class NativeRoutingTests(unittest.TestCase):
     ) -> subprocess.CompletedProcess[str]:
         compatibility = ["--allow-incompatible-client"] if allow_incompatible else []
         env = os.environ.copy()
-        env["PATH"] = f"{self.bin}{os.pathsep}{env.get('PATH', '')}"
+        runtime_bin = Path(sys.executable).resolve().parent
+        env["PATH"] = os.pathsep.join(
+            (str(self.bin), str(runtime_bin), env.get("PATH", ""))
+        )
         if os.name == "nt":
             env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
         result = subprocess.run(
@@ -478,10 +481,10 @@ class NativeRoutingTests(unittest.TestCase):
         self.assertIn("cannot contact each other, Designer, or Executors", mode)
         self.assertLess(
             mode.index("configured Planner drafts"),
-            mode.index("fresh self-contained review call"),
+            mode.index("reviews task closure"),
         )
         self.assertLess(
-            mode.index("fresh self-contained review call"),
+            mode.index("reviews task closure"),
             mode.index("On PLAN_REVISE"),
         )
         self.assertLess(
@@ -524,12 +527,35 @@ class NativeRoutingTests(unittest.TestCase):
         ):
             self.assertNotIn(hard_coded, mode)
 
+    def test_policy_is_compact_and_preserves_closure_runtime_controls(self) -> None:
+        executor = {"kind": "model", "model": "gpt-5.6-luna", "effort": "xhigh"}
+        advisor = {
+            "kind": "claude_subscription",
+            "model": NATIVE.OPUS_MODEL,
+            "effort": "high",
+            "server": "fable-advisor-python3",
+        }
+        mode, usage = NATIVE.build_policy(executor, None, advisor)
+
+        self.assertLessEqual(len(mode) + len(usage), 4_800)
+        for required in (
+            "task closure",
+            "`C` backlog",
+            "convergence",
+            "five",
+            "best-effort",
+            "NOT_ADVISOR_APPROVED",
+        ):
+            self.assertIn(required, mode + usage)
+        self.assertNotIn("review_session_id", mode + usage)
+        self.assertNotIn("previous_review_sha256", mode + usage)
+
     def test_policy_root_fallback_planner_without_advisor_and_fable_hints(self) -> None:
         executor = {"kind": "model", "model": "gpt-5.6-luna", "effort": "high"}
         advisor = {"kind": "model", "model": "gpt-5.6-terra", "effort": "high"}
         root_mode, root_usage = NATIVE.build_policy(executor, None, advisor)
         self.assertIn("root drafts and revises every plan", root_mode)
-        self.assertIn("fresh self-contained review call", root_mode)
+        self.assertIn("reviews task closure", root_mode)
         self.assertIn("No Planner route is configured", root_usage)
 
         planner = {"kind": "model", "model": "gpt-5.6-sol", "effort": "xhigh"}
@@ -2371,7 +2397,7 @@ class NativeRoutingTests(unittest.TestCase):
     def test_opus_version_and_effort_prerequisites_fail_closed(self) -> None:
         original = self.claude.read_text(encoding="utf-8")
         self.claude.write_text(
-            original.replace("2.1.219 (Claude Code)", "2.1.218 (Claude Code)"),
+            original.replace("2.1.220 (Claude Code)", "2.1.219 (Claude Code)"),
             encoding="utf-8",
         )
         too_old = self.run_script(
@@ -2381,23 +2407,23 @@ class NativeRoutingTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(too_old.returncode, 2)
-        self.assertIn("requires Claude Code 2.1.219 or newer", too_old.stderr)
+        self.assertIn("requires Claude Code 2.1.220 or newer", too_old.stderr)
         self.assertFalse((self.home / NATIVE.STATE_FILENAME).exists())
 
     def test_opus_version_output_must_be_one_canonical_version_line(self) -> None:
         original = self.claude.read_text(encoding="utf-8")
 
         for output in (
-            "2.1.219 (Claude Code)",
-            " \t2.1.219 (Claude Code)\r\n",
             "2.1.220 (Claude Code)",
+            " \t2.1.220 (Claude Code)\r\n",
+            "2.1.221 (Claude Code)",
             "2.2.0 (Claude Code)",
             "3.0.0 (Claude Code)",
         ):
             with self.subTest(accepted=output):
                 self.claude.write_text(
                     original.replace(
-                        'print("2.1.219 (Claude Code)")',
+                        'print("2.1.220 (Claude Code)")',
                         f"print({output!r})",
                     ),
                     encoding="utf-8",
@@ -2410,18 +2436,18 @@ class NativeRoutingTests(unittest.TestCase):
                 self.assertIn("Dry run only", accepted.stdout)
 
         for output in (
-            "wrapper 9.9.9\n2.1.219 (Claude Code)",
-            "2.1.219 (Claude Code)\n2.1.220 (Claude Code)",
-            "Claude Code 2.1.219",
-            "prefix2.1.219 (Claude Code)",
-            "2.1.219 (Claude Code)suffix",
-            "02.1.219 (Claude Code)",
+            "wrapper 9.9.9\n2.1.220 (Claude Code)",
+            "2.1.220 (Claude Code)\n2.1.221 (Claude Code)",
+            "Claude Code 2.1.220",
+            "prefix2.1.220 (Claude Code)",
+            "2.1.220 (Claude Code)suffix",
+            "02.1.220 (Claude Code)",
             f"{'9' * 5000}.1.1 (Claude Code)",
         ):
             with self.subTest(rejected=output):
                 self.claude.write_text(
                     original.replace(
-                        'print("2.1.219 (Claude Code)")',
+                        'print("2.1.220 (Claude Code)")',
                         f"print({output!r})",
                     ),
                     encoding="utf-8",
@@ -2440,8 +2466,8 @@ class NativeRoutingTests(unittest.TestCase):
 
         self.claude.write_text(
             original.replace(
-                'print("2.1.219 (Claude Code)")',
-                "print('2.1.218 (Claude Code)')",
+                'print("2.1.220 (Claude Code)")',
+                "print('2.1.219 (Claude Code)')",
             ),
             encoding="utf-8",
         )
@@ -2452,7 +2478,7 @@ class NativeRoutingTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(too_old.returncode, 2)
-        self.assertIn("requires Claude Code 2.1.219 or newer", too_old.stderr)
+        self.assertIn("requires Claude Code 2.1.220 or newer", too_old.stderr)
 
     def test_bundled_claude_prerequisite_checks_every_runtime_control(self) -> None:
         original = self.claude.read_text(encoding="utf-8")
@@ -2550,7 +2576,7 @@ class NativeRoutingTests(unittest.TestCase):
         self.assertIn("Claude Opus 5 effort must be one of", unsealed.stderr)
 
         self.claude.write_text(
-            original.replace("2.1.219 (Claude Code)", "not-a-version"),
+            original.replace("2.1.220 (Claude Code)", "not-a-version"),
             encoding="utf-8",
         )
         malformed = self.run_script(

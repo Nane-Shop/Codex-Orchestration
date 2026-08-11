@@ -27,7 +27,7 @@ These facts were source-checked and runtime-tested on July 10, 2026. Always capa
 | `usage_hint_text` | Appended to the spawn tool description | Carries the exact Planner/Advisor/Executor routes where the root chooses children. |
 | `multi_agent_mode_hint_text` | Replaces the default proactive/explicit mode hint and is sent to root and child tasks | Must contain both root and child boundaries. |
 | Claude Fable 5 MCP route | Root-directed `create_plan`, `revise_plan`, and `review_plan` tools invoke the authenticated Claude Code CLI headlessly with no model tools | Built-in cross-provider Planner or Advisor exception; current MCP requests do not provide caller identity, so caller isolation is policy-enforced. |
-| Claude Opus 5 MCP route | Uses the same bounded compatibility launchers with exact model `claude-opus-5` and Claude Code 2.1.219+ | Sealed cross-provider Planner or Advisor; at most one bundled Claude subscription seat may be active. |
+| Claude Opus 5 MCP route | Uses the same bounded compatibility launchers with exact model `claude-opus-5` and Claude Code 2.1.220+ | Sealed cross-provider Planner or Advisor; at most one bundled Claude subscription seat may be active. |
 | `fork_turns` default | `all` | Different model/effort/role overrides are rejected unless the call uses `none` or a positive partial fork. |
 | Effective concurrency | Determined by the active Codex version and `agents.max_threads` configuration | This plugin never changes the limit or forces a worker count. |
 | Older CLI 0.142.5 | Rejects `multi_agent_mode_hint_text` as an unknown feature-table field | Never write the global native policy without checking every known shared-config client. |
@@ -84,6 +84,8 @@ agent_type="codex_orchestration_advisor", fork_turns="none"
 For Claude Fable 5 or Claude Opus 5 it names the enabled bundled MCP server and tells the root to use `create_plan`/`revise_plan` for the Planner seat or `review_plan` for the Advisor seat. These are root tool calls, not `spawn_agent`, so `fork_turns` does not apply.
 
 The custom mode text is visible in spawned children too. That is why it says: if root, orchestrate; if child, stay within the packet and never spawn.
+
+The root stops early on approval and performs at most five Advisor reviews.
 
 ## Routing strength and its honest boundary
 
@@ -244,7 +246,7 @@ its resolved runtime identity `claude-opus-4-8`; only the exact internal helper
 still requires `claude-opus-5`, with no helper. Its Claude Code 2.1.220 usage
 record may additionally contain only the complete exact identity pair
 `canonicalModel: claude-opus-5` and `provider: firstParty`; legacy numeric-only
-records remain compatible. The bridge continues to derive `used_models` only
+records are rejected. The bridge continues to derive `used_models` only
 from top-level runtime keys and rejects partial, mismatched, cross-route, or
 additional string identity metadata. Advisor decisions use
 `--json-schema` and are locally revalidated; raw prose is not approval. Any
@@ -267,7 +269,7 @@ Saved state compatibility is explicit: schema 1 must carry policy version 1 and 
 Fable setup defaults to `high`. It accepts the Claude Code effort values `low`, `medium`, `high`, `xhigh`, and `max`; the user-facing label `ultra` normalizes to the effective Claude Code value `max` because the CLI has no separate Ultra setting. Setup checks the installed CLI's advertised choices before persisting the route. The bridge reads only the normalized saved value, so tool callers cannot raise the effort at review time. Existing saved `max` routes remain compatible.
 
 Opus setup also defaults to `high` and seals exactly `low`, `medium`, `high`,
-`xhigh`, and `max`, with no alias. It requires Claude Code 2.1.219 or newer.
+`xhigh`, and `max`, with no alias. It requires Claude Code 2.1.220 or newer.
 The selected effort must be contained in a non-empty parseable CLI advertisement;
 extra advertised values remain unselectable. An Opus effort can be updated on the
 same seat. Replacing or moving an Opus-involved bundled route requires a full
@@ -298,7 +300,21 @@ The bundled Claude bridge is mechanically narrower than a child: its tools accep
 
 Planner or Advisor failure is never approval. Configured seats are required for a non-trivial Executor plan unless the user explicitly marks one best-effort for the current task. Transport failure, malformed output, missing context, stale plan versions, or wrong routes stop Executor work by default.
 
-Every Advisor call is fresh and stateless. The root carries the canonical current plan, numbered version, and compact cumulative findings ledger. `PLAN_REVISE` returns to the same Planner route; `PLAN_APPROVED` stops the loop. The root allows at most five Advisor reviews. Review five without approval halts with the current plan, ledger, and unresolved findings instead of silently executing.
+Each Advisor round uses a fresh Claude process inside one bounded process-local
+review session. The caller supplies immutable closure scope, stable criteria and
+safety IDs, recomputed scope/plan hashes, round/predecessor attestation,
+monotonic plan version, changed surface, and compact findings ledger. The bridge
+stores only hashes, versions, IDs, sizes, counters, and terminal state; restart
+requires a new round-one session.
+
+`PLAN_REVISE` requires an evidenced A, A-uncertain, or B blocker tied to
+approved scope. Optional hardening remains non-blocking `C` backlog, and scope
+requests require user authority. Approval, review five, two consecutive
+high-closure rounds that add blockers, or unauthorized plan growth terminates
+the session before Executor work. A halt never becomes approval. Opus runtime
+qualification requires the exact ten-key first-party identity record; numeric-
+only legacy metadata and helpers are rejected. Every Claude process group is
+terminated, escalated, and reaped on timeout.
 
 ## Goals and task lifetime
 

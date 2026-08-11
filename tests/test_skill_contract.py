@@ -34,7 +34,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("advisor: Claude Opus 5 XHigh", SKILL)
         self.assertIn("--advisor-opus", SKILL)
         self.assertIn("--planner-opus", SKILL)
-        self.assertIn("Claude Code 2.1.219 or newer", SKILL)
+        self.assertIn("Claude Code 2.1.220 or newer", SKILL)
         self.assertIn("No Opus helper identity is independently established", SKILL)
         self.assertIn("more than one bundled Claude subscription seat", SKILL)
 
@@ -372,7 +372,7 @@ Executor — GPT-5.6 Sol high: Activated
                 for phrase in stale_phrases:
                     self.assertNotIn(phrase, content)
 
-        self.assertIn("safety limit of five reviews", README)
+        self.assertIn("after five reviews", README)
         self.assertIn("five-round bounded approval loop", REFERENCE)
         self.assertIn("at most five Advisor reviews", REFERENCE)
         self.assertIn("five-review approval bound", RELEASE)
