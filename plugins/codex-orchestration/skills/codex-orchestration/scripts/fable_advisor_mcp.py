@@ -508,15 +508,26 @@ def resolve_claude() -> Path:
     raise AdvisorError("Claude Code is not installed or `claude` is not on PATH.")
 
 
-def _bounded_communicate(process: subprocess.Popen[str], timeout: float) -> bool:
+def _teardown_remaining(deadline: float, maximum: float | None = None) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise AdvisorError("Claude process-tree teardown deadline was exhausted.")
+    return min(remaining, maximum) if maximum is not None else remaining
+
+
+def _bounded_communicate(
+    process: subprocess.Popen[str],
+    deadline: float,
+    maximum: float | None = None,
+) -> bool:
     try:
-        process.communicate(timeout=timeout)
+        process.communicate(timeout=_teardown_remaining(deadline, maximum))
         return True
     except (OSError, subprocess.TimeoutExpired):
         return False
 
 
-def _run_taskkill(process_id: int, *, force: bool) -> bool:
+def _run_taskkill(process_id: int, *, force: bool, deadline: float) -> bool:
     command = ["taskkill", "/PID", str(process_id), "/T"]
     if force:
         command.append("/F")
@@ -526,7 +537,7 @@ def _run_taskkill(process_id: int, *, force: bool) -> bool:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=min(PROCESS_TEARDOWN_RESERVE_SECONDS, 10),
+            timeout=_teardown_remaining(deadline, 10),
             check=False,
             shell=False,
             env=sanitized_environment(),
@@ -536,7 +547,7 @@ def _run_taskkill(process_id: int, *, force: bool) -> bool:
     return result.returncode == 0
 
 
-def _posix_descendant_pids(process_id: int) -> set[int]:
+def _posix_descendant_pids(process_id: int, *, deadline: float) -> set[int]:
     try:
         result = subprocess.run(
             ["ps", "-axo", "pid=,ppid="],
@@ -544,7 +555,7 @@ def _posix_descendant_pids(process_id: int) -> set[int]:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
-            timeout=min(PROCESS_TEARDOWN_GRACE_SECONDS, 5),
+            timeout=_teardown_remaining(deadline, 5),
             check=False,
             shell=False,
             env=sanitized_environment(),
@@ -604,29 +615,36 @@ def _posix_group_exists(process_group_id: int) -> bool:
 
 
 def _terminate_process_group(process: subprocess.Popen[str]) -> str:
+    deadline = time.monotonic() + PROCESS_TEARDOWN_RESERVE_SECONDS
     if os.name == "nt":
-        graceful_tree = _run_taskkill(process.pid, force=False)
+        graceful_tree = _run_taskkill(
+            process.pid, force=False, deadline=deadline
+        )
         gracefully_reaped = _bounded_communicate(
-            process, PROCESS_TEARDOWN_GRACE_SECONDS
+            process, deadline, PROCESS_TEARDOWN_GRACE_SECONDS
         )
         if graceful_tree and gracefully_reaped:
+            _teardown_remaining(deadline)
             return "killed"
-        forced_tree = _run_taskkill(process.pid, force=True)
+        forced_tree = _run_taskkill(process.pid, force=True, deadline=deadline)
         forcibly_reaped = _bounded_communicate(
-            process, PROCESS_TEARDOWN_RESERVE_SECONDS
+            process, deadline
         )
         if forced_tree and forcibly_reaped:
+            _teardown_remaining(deadline)
             return "killed"
         try:
             process.kill()
         except OSError:
             pass
-        _bounded_communicate(process, PROCESS_TEARDOWN_GRACE_SECONDS)
+        _bounded_communicate(
+            process, deadline, PROCESS_TEARDOWN_GRACE_SECONDS
+        )
         raise AdvisorError("Could not terminate the complete Claude process tree.")
 
     teardown_error: AdvisorError | None = None
     try:
-        descendants = _posix_descendant_pids(process.pid)
+        descendants = _posix_descendant_pids(process.pid, deadline=deadline)
     except AdvisorError as exc:
         descendants = set()
         teardown_error = exc
@@ -642,10 +660,12 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> str:
         _signal_posix_processes(descendants, signal.SIGTERM)
     except AdvisorError as exc:
         teardown_error = teardown_error or exc
-    _bounded_communicate(process, PROCESS_TEARDOWN_GRACE_SECONDS)
+    _bounded_communicate(process, deadline, PROCESS_TEARDOWN_GRACE_SECONDS)
     if process.poll() is None:
         try:
-            descendants.update(_posix_descendant_pids(process.pid))
+            descendants.update(
+                _posix_descendant_pids(process.pid, deadline=deadline)
+            )
         except AdvisorError as exc:
             teardown_error = teardown_error or exc
     try:
@@ -660,15 +680,13 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> str:
         _signal_posix_processes(descendants, signal.SIGKILL)
     except AdvisorError as exc:
         teardown_error = teardown_error or exc
-    if not _bounded_communicate(process, PROCESS_TEARDOWN_RESERVE_SECONDS):
+    if not _bounded_communicate(process, deadline):
         raise AdvisorError("Could not reap the terminated Claude process tree.")
-    deadline = time.monotonic() + PROCESS_TEARDOWN_RESERVE_SECONDS
     while _posix_group_exists(process.pid) or any(
         _posix_process_exists(process_id) for process_id in descendants
     ):
-        if time.monotonic() >= deadline:
-            raise AdvisorError("Could not verify complete Claude process-tree teardown.")
-        time.sleep(0.01)
+        time.sleep(min(0.01, _teardown_remaining(deadline)))
+    _teardown_remaining(deadline)
     if teardown_error is not None:
         raise AdvisorError(
             "Could not enumerate or verify the complete Claude process tree."

@@ -324,7 +324,10 @@ only legacy metadata and helpers are rejected. Every Claude process group is
 terminated, escalated, and reaped on timeout with bounded waits; POSIX also
 captures escaped descendants before signaling and Windows stages bounded
 `taskkill /T` then `/T /F`. Teardown fails closed when complete-tree termination
-cannot be proven. MCP server protocol
+cannot be proven. Enumeration, taskkill, communicate/reap, and verification all
+consume one monotonic absolute teardown deadline rather than resetting a local
+timeout. The packaged arithmetic is derived from the runtime constants and MCP
+configuration: `570 + 20 < 600` seconds. MCP server protocol
 3.0.0 bounds input bytes, JSON nesting, and node count before dispatch.
 
 ## Goals and task lifetime

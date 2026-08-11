@@ -508,7 +508,11 @@ escalates, and reaps the complete group before returning a bounded error. POSIX
 snapshots owned descendants before graceful termination, hard-kills both the
 group and any escaped descendants, and bounds every reap. Windows escalates
 through bounded `taskkill /T` and `/T /F`; both platforms fail closed if
-complete-tree termination cannot be proven. MCP stdin is
+complete-tree termination cannot be proven. Every blocking teardown step uses
+the remaining time from one monotonic absolute deadline; no retry or fallback
+resets it. The packaged arithmetic is derived from the runtime constants and
+configuration: `570 + 20 < 600` seconds for child, cumulative teardown, and MCP
+tool bounds respectively. MCP stdin is
 byte-, nesting-, and node-bounded before JSON-RPC dispatch. The
 public review result includes session/convergence telemetry, exact runtime
 identity, terminal/stop reason, and a canonical response attestation. Opus

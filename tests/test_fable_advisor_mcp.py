@@ -2849,6 +2849,173 @@ class AdvisorSessionContractTests(unittest.TestCase):
             FABLE._terminate_process_group(process)
         process.kill.assert_called_once_with()
 
+    def test_windows_worst_path_uses_one_cumulative_teardown_deadline(self) -> None:
+        clock = {"now": 100.0}
+        requested: list[tuple[float, float]] = []
+
+        def monotonic() -> float:
+            return clock["now"]
+
+        def taskkill(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            timeout = float(kwargs["timeout"])
+            requested.append((clock["now"], timeout))
+            clock["now"] += timeout
+            return subprocess.CompletedProcess(command, 1, "", "failed")
+
+        process = mock.Mock()
+        process.pid = 4242
+        process.poll.return_value = None
+
+        def communicate(*, timeout: float) -> tuple[str, str]:
+            requested.append((clock["now"], timeout))
+            clock["now"] += timeout
+            raise subprocess.TimeoutExpired(["claude"], timeout)
+
+        process.communicate.side_effect = communicate
+        started = clock["now"]
+        with (
+            mock.patch.object(FABLE.os, "name", "nt"),
+            mock.patch.object(FABLE.time, "monotonic", side_effect=monotonic),
+            mock.patch.object(FABLE.subprocess, "run", side_effect=taskkill),
+            self.assertRaises(FABLE.AdvisorError),
+        ):
+            FABLE._terminate_process_group(process)
+        self.assertLessEqual(
+            clock["now"] - started,
+            FABLE.PROCESS_TEARDOWN_RESERVE_SECONDS,
+        )
+        for requested_at, timeout in requested:
+            self.assertLessEqual(
+                timeout,
+                started
+                + FABLE.PROCESS_TEARDOWN_RESERVE_SECONDS
+                - requested_at,
+            )
+
+    @unittest.skipIf(os.name == "nt", "POSIX deadline assertion")
+    def test_posix_worst_path_uses_one_cumulative_teardown_deadline(self) -> None:
+        clock = {"now": 100.0}
+        requested: list[tuple[float, float]] = []
+
+        def monotonic() -> float:
+            return clock["now"]
+
+        def enumerate_processes(
+            command: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            timeout = float(kwargs["timeout"])
+            requested.append((clock["now"], timeout))
+            clock["now"] += timeout
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        process = mock.Mock()
+        process.pid = 4242
+        process.poll.return_value = None
+
+        def communicate(*, timeout: float) -> tuple[str, str]:
+            requested.append((clock["now"], timeout))
+            clock["now"] += timeout
+            raise subprocess.TimeoutExpired(["claude"], timeout)
+
+        process.communicate.side_effect = communicate
+        started = clock["now"]
+        with (
+            mock.patch.object(FABLE.time, "monotonic", side_effect=monotonic),
+            mock.patch.object(
+                FABLE.subprocess, "run", side_effect=enumerate_processes
+            ),
+            mock.patch.object(FABLE.os, "killpg"),
+            self.assertRaises(FABLE.AdvisorError),
+        ):
+            FABLE._terminate_process_group(process)
+        self.assertLessEqual(
+            clock["now"] - started,
+            FABLE.PROCESS_TEARDOWN_RESERVE_SECONDS,
+        )
+        for requested_at, timeout in requested:
+            self.assertLessEqual(
+                timeout,
+                started
+                + FABLE.PROCESS_TEARDOWN_RESERVE_SECONDS
+                - requested_at,
+            )
+
+    def test_windows_exact_deadline_exhaustion_cannot_report_success(self) -> None:
+        clock = {"now": 100.0}
+
+        def monotonic() -> float:
+            return clock["now"]
+
+        def taskkill(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            del kwargs
+            clock["now"] += 1
+            return subprocess.CompletedProcess(
+                command,
+                0 if "/F" in command else 1,
+                "",
+                "",
+            )
+
+        process = mock.Mock()
+        process.pid = 4242
+        communicate_count = 0
+
+        def communicate(*, timeout: float) -> tuple[str, str]:
+            nonlocal communicate_count
+            communicate_count += 1
+            clock["now"] += timeout
+            if communicate_count == 1:
+                raise subprocess.TimeoutExpired(["claude"], timeout)
+            return "", ""
+
+        process.communicate.side_effect = communicate
+        with (
+            mock.patch.object(FABLE.os, "name", "nt"),
+            mock.patch.object(FABLE.time, "monotonic", side_effect=monotonic),
+            mock.patch.object(FABLE.subprocess, "run", side_effect=taskkill),
+            self.assertRaisesRegex(FABLE.AdvisorError, "deadline|exhausted"),
+        ):
+            FABLE._terminate_process_group(process)
+
+    @unittest.skipIf(os.name == "nt", "POSIX deadline assertion")
+    def test_posix_exact_deadline_exhaustion_cannot_report_success(self) -> None:
+        clock = {"now": 100.0}
+
+        def monotonic() -> float:
+            return clock["now"]
+
+        def enumerate_processes(
+            command: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            del kwargs
+            clock["now"] += 1
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        process = mock.Mock()
+        process.pid = 4242
+        process.poll.return_value = None
+        communicate_count = 0
+
+        def communicate(*, timeout: float) -> tuple[str, str]:
+            nonlocal communicate_count
+            communicate_count += 1
+            clock["now"] += timeout
+            if communicate_count == 1:
+                raise subprocess.TimeoutExpired(["claude"], timeout)
+            return "", ""
+
+        process.communicate.side_effect = communicate
+        with (
+            mock.patch.object(FABLE.time, "monotonic", side_effect=monotonic),
+            mock.patch.object(
+                FABLE.subprocess, "run", side_effect=enumerate_processes
+            ),
+            mock.patch.object(FABLE.os, "killpg"),
+            mock.patch.object(FABLE, "_posix_group_exists", return_value=False),
+            self.assertRaisesRegex(FABLE.AdvisorError, "deadline|exhausted"),
+        ):
+            FABLE._terminate_process_group(process)
+
     def test_mcp_timeout_exceeds_child_timeout_plus_teardown_reserve(self) -> None:
         mcp = json.loads(
             (
@@ -2856,10 +3023,12 @@ class AdvisorSessionContractTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
         )
         for server in mcp["mcpServers"].values():
+            available_teardown_seconds = (
+                server["tool_timeout_sec"] - FABLE.CLAUDE_TIMEOUT_SECONDS
+            )
             self.assertGreater(
-                server["tool_timeout_sec"],
-                FABLE.CLAUDE_TIMEOUT_SECONDS
-                + FABLE.PROCESS_TEARDOWN_RESERVE_SECONDS,
+                available_teardown_seconds,
+                FABLE.PROCESS_TEARDOWN_RESERVE_SECONDS,
             )
 
     def test_carried_blocker_is_not_scope_creep_and_new_evidence_a_stays_blocking(self) -> None:
