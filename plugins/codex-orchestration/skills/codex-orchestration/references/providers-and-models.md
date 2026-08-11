@@ -326,8 +326,10 @@ captures escaped descendants before signaling and Windows stages bounded
 `taskkill /T` then `/T /F`. Teardown fails closed when complete-tree termination
 cannot be proven. Enumeration, taskkill, communicate/reap, and verification all
 consume one monotonic absolute teardown deadline rather than resetting a local
-timeout. The packaged arithmetic is derived from the runtime constants and MCP
-configuration: `570 + 20 < 600` seconds. MCP server protocol
+timeout. Process-table parsing/traversal, descendant signaling, and liveness
+probes are guarded before and after every item and capped at 10,000 nodes. The
+19-second operational deadline remains strictly inside the declared 20-second
+reserve, while packaged MCP arithmetic remains `570 + 20 < 600`. MCP server protocol
 3.0.0 bounds input bytes, JSON nesting, and node count before dispatch.
 
 ## Goals and task lifetime

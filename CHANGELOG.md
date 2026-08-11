@@ -12,9 +12,10 @@
   accepted result remains representable by the next exact ledger, and close
   timeout teardown races where the direct child exits before its stubborn or
   escaped descendants.
-- Enforce one monotonic 20-second absolute teardown deadline across every tree
-  enumeration, taskkill, reap, and verification step; it remains strictly below
-  the packaged MCP headroom (`570 + 20 < 600`) without per-step budget resets.
+- Enforce one monotonic 19-second absolute teardown deadline inside the declared
+  20-second reserve across every bounded tree node, enumeration, signal, probe,
+  taskkill, reap, and verification step; packaged headroom remains
+  `570 + 20 < 600` without per-step budget resets.
 - Replace the opaque Advisor packet with a hash-bound, process-local review
   session contract that enforces predecessor chains, monotonic versions, five
   rounds, typed task-closure findings, `C` backlog separation, and terminal

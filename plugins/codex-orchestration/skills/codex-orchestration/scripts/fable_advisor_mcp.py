@@ -10,6 +10,8 @@ no-tools/no-persistence process.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
+import io
 import json
 import hashlib
 import math
@@ -22,7 +24,7 @@ import shutil
 import subprocess
 import sys
 import time
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 import routing_state
 
@@ -56,6 +58,7 @@ ALLOWED_RUNTIME_MODELS_BY_PRIMARY = {
 CLAUDE_TIMEOUT_SECONDS = 570
 PROCESS_TEARDOWN_GRACE_SECONDS = 1.0
 PROCESS_TEARDOWN_RESERVE_SECONDS = 20
+PROCESS_TEARDOWN_DEADLINE_SECONDS = 19
 AUTH_TIMEOUT_SECONDS = 20
 CLAUDE_MIN_VERSION = (2, 1, 220)
 # Applies to the combined user-controlled text sent by one model operation.
@@ -68,6 +71,7 @@ MAX_REVIEW_FINDING_IDS = 500
 MAX_MCP_REQUEST_BYTES = 256_000
 MAX_MCP_JSON_DEPTH = 32
 MAX_MCP_JSON_NODES = 10_000
+MAX_PROCESS_TREE_NODES = MAX_MCP_JSON_NODES
 SHA256_PATTERN = "^[0-9a-f]{64}$"
 CURRENT_STATE_SCHEMA = 6
 CURRENT_POLICY_VERSION = 6
@@ -89,6 +93,7 @@ REVIEW_REQUEST_FIELDS = (
     "scope_growth_authorization",
     "findings_ledger",
 )
+_DeadlineItem = TypeVar("_DeadlineItem")
 # Process-local safety boundary. Values deliberately contain only bounded hashes,
 # versions, finding IDs, sizes, counters, and terminal state.
 _REVIEW_SESSIONS: dict[str, dict[str, Any]] = {}
@@ -515,6 +520,28 @@ def _teardown_remaining(deadline: float, maximum: float | None = None) -> float:
     return min(remaining, maximum) if maximum is not None else remaining
 
 
+def _deadline_items(
+    items: Iterable[_DeadlineItem],
+    *,
+    deadline: float,
+    maximum: int | None = MAX_PROCESS_TREE_NODES,
+) -> Iterator[_DeadlineItem]:
+    iterator = iter(items)
+    count = 0
+    while True:
+        _teardown_remaining(deadline)
+        try:
+            item = next(iterator)
+        except StopIteration:
+            return
+        _teardown_remaining(deadline)
+        count += 1
+        if maximum is not None and count > maximum:
+            raise AdvisorError("Claude process-tree node capacity was exceeded.")
+        yield item
+        _teardown_remaining(deadline)
+
+
 def _bounded_communicate(
     process: subprocess.Popen[str],
     deadline: float,
@@ -562,11 +589,12 @@ def _posix_descendant_pids(process_id: int, *, deadline: float) -> set[int]:
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise AdvisorError("Could not enumerate the Claude process tree.") from exc
-    if result.returncode != 0:
+    if result.returncode != 0 or not isinstance(result.stdout, str):
         raise AdvisorError("Could not enumerate the Claude process tree.")
+    stdout_lines = io.StringIO(result.stdout)
     children: dict[int, set[int]] = {}
     try:
-        for line in result.stdout.splitlines():
+        for line in _deadline_items(stdout_lines, deadline=deadline):
             pid_text, parent_text = line.split()
             pid = int(pid_text)
             parent = int(parent_text)
@@ -575,8 +603,7 @@ def _posix_descendant_pids(process_id: int, *, deadline: float) -> set[int]:
         raise AdvisorError("Could not enumerate the Claude process tree.") from exc
     descendants: set[int] = set()
     pending = list(children.get(process_id, ()))
-    while pending:
-        descendant = pending.pop()
+    for descendant in _deadline_items(pending, deadline=deadline):
         if descendant in descendants:
             continue
         descendants.add(descendant)
@@ -584,8 +611,10 @@ def _posix_descendant_pids(process_id: int, *, deadline: float) -> set[int]:
     return descendants
 
 
-def _signal_posix_processes(process_ids: set[int], signal_number: int) -> None:
-    for process_id in process_ids:
+def _signal_posix_processes(
+    process_ids: set[int], signal_number: int, *, deadline: float
+) -> None:
+    for process_id in _deadline_items(process_ids, deadline=deadline):
         try:
             os.kill(process_id, signal_number)
         except ProcessLookupError:
@@ -615,7 +644,7 @@ def _posix_group_exists(process_group_id: int) -> bool:
 
 
 def _terminate_process_group(process: subprocess.Popen[str]) -> str:
-    deadline = time.monotonic() + PROCESS_TEARDOWN_RESERVE_SECONDS
+    deadline = time.monotonic() + PROCESS_TEARDOWN_DEADLINE_SECONDS
     if os.name == "nt":
         graceful_tree = _run_taskkill(
             process.pid, force=False, deadline=deadline
@@ -657,7 +686,9 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> str:
             "Could not terminate the complete Claude process tree."
         )
     try:
-        _signal_posix_processes(descendants, signal.SIGTERM)
+        _signal_posix_processes(
+            descendants, signal.SIGTERM, deadline=deadline
+        )
     except AdvisorError as exc:
         teardown_error = teardown_error or exc
     _bounded_communicate(process, deadline, PROCESS_TEARDOWN_GRACE_SECONDS)
@@ -677,14 +708,23 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> str:
             "Could not terminate the complete Claude process tree."
         )
     try:
-        _signal_posix_processes(descendants, signal.SIGKILL)
+        _signal_posix_processes(
+            descendants, signal.SIGKILL, deadline=deadline
+        )
     except AdvisorError as exc:
         teardown_error = teardown_error or exc
     if not _bounded_communicate(process, deadline):
         raise AdvisorError("Could not reap the terminated Claude process tree.")
-    while _posix_group_exists(process.pid) or any(
-        _posix_process_exists(process_id) for process_id in descendants
-    ):
+    while True:
+        _teardown_remaining(deadline)
+        group_exists = _posix_group_exists(process.pid)
+        _teardown_remaining(deadline)
+        descendant_exists = False
+        for process_id in _deadline_items(descendants, deadline=deadline):
+            if _posix_process_exists(process_id):
+                descendant_exists = True
+        if not group_exists and not descendant_exists:
+            break
         time.sleep(min(0.01, _teardown_remaining(deadline)))
     _teardown_remaining(deadline)
     if teardown_error is not None:

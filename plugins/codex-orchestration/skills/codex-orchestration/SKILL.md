@@ -510,9 +510,11 @@ group and any escaped descendants, and bounds every reap. Windows escalates
 through bounded `taskkill /T` and `/T /F`; both platforms fail closed if
 complete-tree termination cannot be proven. Every blocking teardown step uses
 the remaining time from one monotonic absolute deadline; no retry or fallback
-resets it. The packaged arithmetic is derived from the runtime constants and
-configuration: `570 + 20 < 600` seconds for child, cumulative teardown, and MCP
-tool bounds respectively. MCP stdin is
+resets it. Process-table parsing/traversal, descendant signals, and liveness
+probes use the same per-item deadline guard and a 10,000-node maximum. The
+19-second operational deadline stays strictly within the declared 20-second
+reserve; packaged arithmetic remains `570 + 20 < 600` for child, reserve, and
+MCP tool bounds. MCP stdin is
 byte-, nesting-, and node-bounded before JSON-RPC dispatch. The
 public review result includes session/convergence telemetry, exact runtime
 identity, terminal/stop reason, and a canonical response attestation. Opus

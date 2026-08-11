@@ -3016,11 +3016,138 @@ class AdvisorSessionContractTests(unittest.TestCase):
         ):
             FABLE._terminate_process_group(process)
 
+    @unittest.skipIf(os.name == "nt", "POSIX deadline assertion")
+    def test_slow_process_table_parsing_stops_at_cumulative_deadline(self) -> None:
+        clock = {"now": 100.0}
+
+        def monotonic() -> float:
+            return clock["now"]
+
+        class SlowProcessTable:
+            def __iter__(self) -> object:
+                for process_id in range(2, 1_002):
+                    clock["now"] += 0.05
+                    yield f"{process_id} {process_id - 1}"
+
+        process = mock.Mock()
+        process.pid = 1
+        process.poll.return_value = None
+        process.communicate.return_value = ("", "")
+        process_table = subprocess.CompletedProcess(["ps"], 0, "", "")
+        started = clock["now"]
+        with (
+            mock.patch.object(FABLE.time, "monotonic", side_effect=monotonic),
+            mock.patch.object(FABLE.subprocess, "run", return_value=process_table),
+            mock.patch.object(FABLE.io, "StringIO", return_value=SlowProcessTable()),
+            mock.patch.object(FABLE.os, "killpg"),
+            mock.patch.object(FABLE.os, "kill"),
+            self.assertRaisesRegex(FABLE.AdvisorError, "deadline|exhausted"),
+        ):
+            FABLE._terminate_process_group(process)
+        self.assertLessEqual(
+            clock["now"] - started,
+            FABLE.PROCESS_TEARDOWN_RESERVE_SECONDS,
+        )
+
+    @unittest.skipIf(os.name == "nt", "POSIX process-table assertion")
+    def test_process_table_has_deterministic_node_capacity(self) -> None:
+        rows = "\n".join(
+            f"{process_id} 1"
+            for process_id in range(2, FABLE.MAX_MCP_JSON_NODES + 3)
+        )
+        result = subprocess.CompletedProcess(["ps"], 0, rows, "")
+        with (
+            mock.patch.object(FABLE.subprocess, "run", return_value=result),
+            self.assertRaisesRegex(FABLE.AdvisorError, "capacity|node|process tree"),
+        ):
+            FABLE._posix_descendant_pids(
+                1,
+                deadline=time.monotonic()
+                + FABLE.PROCESS_TEARDOWN_RESERVE_SECONDS,
+            )
+
+    @unittest.skipIf(os.name == "nt", "POSIX signaling assertion")
+    def test_slow_descendant_signaling_stops_at_cumulative_deadline(self) -> None:
+        clock = {"now": 100.0}
+
+        def monotonic() -> float:
+            return clock["now"]
+
+        def slow_signal(process_id: int, signal_number: int) -> None:
+            del process_id, signal_number
+            clock["now"] += 0.05
+
+        process = mock.Mock()
+        process.pid = 1
+        process.poll.return_value = None
+        process.communicate.return_value = ("", "")
+        descendants = set(range(2, 1_002))
+        started = clock["now"]
+        with (
+            mock.patch.object(FABLE.time, "monotonic", side_effect=monotonic),
+            mock.patch.object(
+                FABLE, "_posix_descendant_pids", return_value=descendants
+            ),
+            mock.patch.object(FABLE.os, "killpg"),
+            mock.patch.object(FABLE.os, "kill", side_effect=slow_signal),
+            self.assertRaisesRegex(FABLE.AdvisorError, "deadline|exhausted"),
+        ):
+            FABLE._terminate_process_group(process)
+        self.assertLessEqual(
+            clock["now"] - started,
+            FABLE.PROCESS_TEARDOWN_RESERVE_SECONDS,
+        )
+
+    @unittest.skipIf(os.name == "nt", "POSIX verification assertion")
+    def test_slow_descendant_probes_stop_at_cumulative_deadline(self) -> None:
+        clock = {"now": 100.0}
+
+        def monotonic() -> float:
+            return clock["now"]
+
+        def slow_probe(process_id: int) -> bool:
+            del process_id
+            clock["now"] += 0.05
+            return False
+
+        process = mock.Mock()
+        process.pid = 1
+        process.poll.return_value = None
+        process.communicate.return_value = ("", "")
+        descendants = set(range(2, 1_002))
+        started = clock["now"]
+        with (
+            mock.patch.object(FABLE.time, "monotonic", side_effect=monotonic),
+            mock.patch.object(
+                FABLE, "_posix_descendant_pids", return_value=descendants
+            ),
+            mock.patch.object(FABLE, "_signal_posix_processes"),
+            mock.patch.object(FABLE.os, "killpg"),
+            mock.patch.object(FABLE, "_posix_group_exists", return_value=False),
+            mock.patch.object(
+                FABLE, "_posix_process_exists", side_effect=slow_probe
+            ),
+            self.assertRaisesRegex(FABLE.AdvisorError, "deadline|exhausted"),
+        ):
+            FABLE._terminate_process_group(process)
+        self.assertLessEqual(
+            clock["now"] - started,
+            FABLE.PROCESS_TEARDOWN_RESERVE_SECONDS,
+        )
+
     def test_mcp_timeout_exceeds_child_timeout_plus_teardown_reserve(self) -> None:
         mcp = json.loads(
             (
                 REPO_ROOT / "plugins" / "codex-orchestration" / ".mcp.json"
             ).read_text(encoding="utf-8")
+        )
+        deadline_seconds = getattr(
+            FABLE, "PROCESS_TEARDOWN_DEADLINE_SECONDS", None
+        )
+        self.assertIsNotNone(deadline_seconds)
+        self.assertLess(
+            deadline_seconds,
+            FABLE.PROCESS_TEARDOWN_RESERVE_SECONDS,
         )
         for server in mcp["mcpServers"].values():
             available_teardown_seconds = (
