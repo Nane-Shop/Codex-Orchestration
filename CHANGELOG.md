@@ -2,6 +2,12 @@
 
 ## 0.10.0 — 2026-08-12
 
+- Close the independent audit findings: bind an exact complete findings ledger,
+  separate authorized scope-growth provenance from ordinary changed surface,
+  count failed model attempts against the five-attempt cap, prove bounded
+  Windows process-tree teardown, bound JSON-RPC stdin before parsing, advance
+  routing state/policy to schema 6, compose schema-3 release attestations, and
+  publish MCP server protocol 3.0.0.
 - Replace the opaque Advisor packet with a hash-bound, process-local review
   session contract that enforces predecessor chains, monotonic versions, five
   rounds, typed task-closure findings, `C` backlog separation, and terminal

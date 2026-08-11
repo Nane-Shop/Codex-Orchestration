@@ -41,8 +41,8 @@ except ModuleNotFoundError as exc:  # pragma: no cover - Python < 3.11
     raise SystemExit("Python 3.11 or newer is required (missing tomllib).") from exc
 
 
-POLICY_VERSION = 5
-STATE_SCHEMA = 5
+POLICY_VERSION = 6
+STATE_SCHEMA = 6
 ADVISOR_REVIEW_LIMIT = 5
 STATE_FILENAME = ".codex-orchestration-routing.json"
 PROBE_VALUE = "CODEX_ORCHESTRATION_CAPABILITY_PROBE"
@@ -1162,7 +1162,9 @@ def build_policy(
         "For a non-trivial plan, the root reviews task closure before Executor work. "
         "PLAN_APPROVED ends review early; PLAN_REVISE returns to the Planner, or root "
         "when Planner is omitted. There may be at most "
-        f"{advisor_review_limit} total Advisor reviews."
+        f"{advisor_review_limit} total Advisor attempts. Every launched review "
+        "consumes one, including failed runtime identity, provider schema, or "
+        "semantic validation."
         if advisor is not None
         else (
             "No Advisor is configured. Do not create a review loop; after a configured "
@@ -1193,9 +1195,9 @@ If you are the root task model, you are the orchestrator. Own intent, planning, 
 
 {designer_mode}
 
-The runtime review contract is authoritative; do not duplicate its schema in prose. The root owns plan version, ledger, review count, validation, and release. There is no Finalizer seat. For Advisor rounds two through {advisor_review_limit}, send only the current plan and version plus a compact cumulative ledger, not prior transcripts. Reject a stale plan version or an invalid or incomplete ledger.
+The runtime review contract is authoritative; do not duplicate its schema in prose. The root owns plan version, ledger, attempt count, validation, and release. There is no Finalizer seat. For Advisor rounds two through {advisor_review_limit}, send only the current plan and version plus a compact cumulative ledger, not prior transcripts. Reject a stale plan version or an invalid or incomplete ledger.
 
-On PLAN_REVISE, merge validated dispositions before another review. Only approved criteria and safety invariants block; reviewer-added hardening is `C` backlog and scope requests need user authority. Honor runtime convergence and terminal halts. A round-{advisor_review_limit} PLAN_REVISE halts before Executor with a non-approval artifact. Route failure also halts. Only explicit current-task best-effort changes this: Planner failure permits the root to take over; Advisor failure may proceed only as NOT_ADVISOR_APPROVED. Never persist best-effort.
+On PLAN_REVISE, merge validated dispositions before another review. Only approved criteria and safety invariants block; reviewer-added hardening is `C` backlog and scope requests need user authority. Ordinary changed surface never authorizes plan growth; pass independent user-authority provenance. Honor runtime convergence and terminal halts. Attempt {advisor_review_limit} or a round-{advisor_review_limit} PLAN_REVISE halts before Executor with a non-approval artifact. Route failure also halts. Only explicit current-task best-effort changes this: Planner failure permits the root to take over; Advisor failure may proceed only as NOT_ADVISOR_APPROVED. Never persist best-effort.
 
 When executor delegation helps, use only the configured route and a bounded packet with objective, owned scope, criteria, checks, and handoff. Inspect, integrate, and verify every result.
 
@@ -1476,9 +1478,19 @@ def _status(
         managed_pair = _is_managed(current["mode"]) and _is_managed(
             current["usage"]
         )
-        state_matches = state is not None and _managed_matches(state, current)
+        state_is_current = state is not None and (
+            state["schema"] == STATE_SCHEMA
+            and state["policy_version"] == POLICY_VERSION
+        )
+        state_matches = (
+            state_is_current and state is not None and _managed_matches(state, current)
+        )
         if state is not None and managed_pair and not state_matches:
-            routing_state = "managed fields conflict with local restore state"
+            routing_state = (
+                "installed but requires policy upgrade"
+                if not state_is_current and _managed_matches(state, current)
+                else "managed fields conflict with local restore state"
+            )
         elif managed_pair:
             controls_ready = (
                 current["metadata"] is False
@@ -1504,6 +1516,11 @@ def _status(
             print(
                 "Recovery: run --repair as a dry run only when the saved plugin "
                 "policy should replace drifted managed hints."
+            )
+        elif routing_state == "installed but requires policy upgrade":
+            print(
+                "Recovery: run one complete setup command to migrate the saved "
+                f"routing state to schema {STATE_SCHEMA}."
             )
         print(
             "V2 activation: not inferred by the installer; choose a v2 root "

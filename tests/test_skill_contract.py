@@ -331,7 +331,7 @@ Executor — GPT-5.6 Sol high: Activated
         self.assertIn("report only to the root", SKILL)
         self.assertIn("contact Executors", SKILL)
         self.assertIn("it never counts as approval", SKILL)
-        self.assertIn("Never exceed five total Advisor reviews", SKILL)
+        self.assertIn("Never exceed five total Advisor model attempts", SKILL)
         self.assertIn("If review five still returns `PLAN_REVISE`", SKILL)
         self.assertIn("NOT_ADVISOR_APPROVED", SKILL)
         self.assertNotIn("at most one confirmation pass", SKILL)
@@ -372,10 +372,10 @@ Executor — GPT-5.6 Sol high: Activated
                 for phrase in stale_phrases:
                     self.assertNotIn(phrase, content)
 
-        self.assertIn("after five reviews", README)
+        self.assertIn("after five model attempts", README)
         self.assertIn("five-round bounded approval loop", REFERENCE)
-        self.assertIn("at most five Advisor reviews", REFERENCE)
-        self.assertIn("five-review approval bound", RELEASE)
+        self.assertIn("at most five Advisor model attempts", REFERENCE)
+        self.assertIn("five-attempt approval bound", RELEASE)
         self.assertEqual(NATIVE_SCRIPT.count("ADVISOR_REVIEW_LIMIT ="), 1)
         # Product/model names and unrelated allowance facts remain unchanged.
         self.assertIn("Claude Fable 5", README)

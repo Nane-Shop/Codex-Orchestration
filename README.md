@@ -52,7 +52,8 @@ The model selected for the Codex task remains in charge. It passes work between 
 Planner and Advisor can work through several revisions. The Advisor closes the
 approved task criteria and safety invariants; optional hardening stays in a
 non-blocking `C` backlog. Each review is hash-bound to its scope, plan, round,
-and predecessor. Codex stops on approval, after five reviews, or when runtime
+predecessor, exact cumulative ledger, and any independently authorized scope-growth
+provenance. Codex stops on approval, after five model attempts, or when runtime
 convergence controls detect a review treadmill or unauthorized plan growth.
 Every terminal halt stops before Executor work and is never approval.
 

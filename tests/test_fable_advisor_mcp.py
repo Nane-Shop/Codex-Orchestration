@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -62,7 +63,7 @@ class FableAdvisorMcpTests(unittest.TestCase):
             "server": "fable-advisor-python3",
         }
 
-    def write_state(self, *, schema: int = 3, **seats: object) -> None:
+    def write_state(self, *, schema: int = 6, **seats: object) -> None:
         subscription_routes = [
             route
             for route in seats.values()
@@ -163,6 +164,10 @@ class FableAdvisorMcpTests(unittest.TestCase):
             "plan_sha256": hashlib.sha256(plan.encode()).hexdigest(),
             "current_plan": plan,
             "changed_surface": [],
+            "scope_growth_authorization": {
+                "authorized": False,
+                "provenance": "",
+            },
             "findings_ledger": [],
         }
 
@@ -810,7 +815,7 @@ class FableAdvisorMcpTests(unittest.TestCase):
             with self.assertRaisesRegex(FABLE.AdvisorError, "configured planner"):
                 FABLE.revise_plan("task", "v1 plan", "F-1", "history")
 
-    def test_route_validation_is_constrained_and_backward_compatible(self) -> None:
+    def test_route_validation_requires_current_policy_but_legacy_state_is_parseable(self) -> None:
         self.assertEqual(FABLE.load_fable_route(self.home)["effort"], "high")
         with self.assertRaisesRegex(FABLE.AdvisorError, "planner.*advisor"):
             FABLE.load_fable_route(self.home, seat="executor")
@@ -828,21 +833,23 @@ class FableAdvisorMcpTests(unittest.TestCase):
             FABLE.load_fable_route(self.home, seat="advisor")
 
         self.write_state(schema=2, advisor=self.route())
-        self.assertEqual(FABLE.load_fable_route(self.home)["effort"], "high")
+        with self.assertRaisesRegex(FABLE.AdvisorError, "current policy"):
+            FABLE.load_fable_route(self.home)
         self.write_state(schema=2, planner=self.route())
         with self.assertRaisesRegex(FABLE.AdvisorError, "state is invalid"):
             FABLE.load_fable_route(self.home, seat="planner")
 
         self.write_state(schema=4, advisor=self.route())
-        self.assertEqual(FABLE.load_fable_route(self.home)["effort"], "high")
+        with self.assertRaisesRegex(FABLE.AdvisorError, "current policy"):
+            FABLE.load_fable_route(self.home)
         self.write_state(schema=4, advisor=self.route(), designer=self.route())
         with self.assertRaisesRegex(FABLE.AdvisorError, "state is invalid"):
             FABLE.load_fable_route(self.home)
-        self.write_state(schema=5, advisor=self.route())
+        self.write_state(schema=6, advisor=self.route())
         self.assertEqual(FABLE.load_fable_route(self.home)["model"], FABLE.FABLE_MODEL)
 
     def test_opus_route_pins_primary_and_rejects_every_unverified_helper(self) -> None:
-        self.write_state(schema=5, advisor=self.opus_route("xhigh"))
+        self.write_state(schema=6, advisor=self.opus_route("xhigh"))
         result, calls = self.invoke_with_results(
             FABLE.review_plan,
             "packet",
@@ -993,7 +1000,7 @@ class FableAdvisorMcpTests(unittest.TestCase):
     def test_opus_planner_create_and_revise_pin_exact_route_and_primary_usage(
         self,
     ) -> None:
-        self.write_state(schema=5, planner=self.opus_route("max"))
+        self.write_state(schema=6, planner=self.opus_route("max"))
         created, create_calls = self.invoke_with_results(
             FABLE.create_plan,
             "bounded task packet",
@@ -1826,6 +1833,7 @@ class FableAdvisorMcpTests(unittest.TestCase):
             initialized["result"]["serverInfo"]["name"],
             "codex-orchestration-fable-advisor",
         )
+        self.assertEqual(initialized["result"]["serverInfo"]["version"], "3.0.0")
         listed = FABLE.handle_request(
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
         )
@@ -1979,6 +1987,11 @@ class AdvisorSessionContractTests(unittest.TestCase):
                 {"id": "SI-1", "description": "No process survives timeout."}
             ],
         }
+        predecessor = FABLE._REVIEW_SESSIONS.get(session, {})
+        ledger = [
+            {"id": finding_id, "disposition": "OPEN", "reason": "Still tracked."}
+            for finding_id in predecessor.get("all_finding_ids", [])
+        ]
         return {
             "review_session_id": session,
             "round_number": round_number,
@@ -1989,7 +2002,11 @@ class AdvisorSessionContractTests(unittest.TestCase):
             "plan_sha256": hashlib.sha256(plan.encode("utf-8")).hexdigest(),
             "current_plan": plan,
             "changed_surface": [] if round_number == 1 else ["AC-1"],
-            "findings_ledger": [],
+            "scope_growth_authorization": {
+                "authorized": False,
+                "provenance": "",
+            },
+            "findings_ledger": ledger,
         }
 
     @staticmethod
@@ -2076,12 +2093,144 @@ class AdvisorSessionContractTests(unittest.TestCase):
                 "plan_sha256",
                 "current_plan",
                 "changed_surface",
+                "scope_growth_authorization",
                 "findings_ledger",
             ],
         )
         self.assertNotIn("packet", schema["properties"])
+        self.assertIn("scope_growth_authorization", schema["properties"])
         self.assertFalse(definition["annotations"]["idempotentHint"])
         self.assertFalse(schema["additionalProperties"])
+
+    def test_findings_ledger_is_exact_unique_and_complete_before_model(self) -> None:
+        invalid_ledgers = (
+            [{"id": "F-1", "disposition": "INCORPORATED"}],
+            [{"id": "F-1", "disposition": "UNKNOWN", "reason": "why"}],
+            [{"id": "F-1", "disposition": "INCORPORATED", "reason": ""}],
+            [
+                {"id": "F-1", "disposition": "OPEN", "reason": "still open"},
+                {"id": "F-1", "disposition": "OPEN", "reason": "duplicate"},
+            ],
+            [],
+            [{"id": "F-404", "disposition": "OPEN", "reason": "unknown"}],
+        )
+        for index, ledger in enumerate(invalid_ledgers):
+            session = f"ledger-{index}"
+            first = self.call(self.request(session=session), approved=False)
+            request = self.request(
+                session=session,
+                round_number=2,
+                previous=first["review_attestation_sha256"],
+                plan_version=2,
+                plan="1. Apply the predecessor disposition.",
+            )
+            request["findings_ledger"] = ledger
+            with self.subTest(index=index), mock.patch.object(
+                FABLE, "_invoke_fable"
+            ) as invoke:
+                with self.assertRaises(FABLE.AdvisorError):
+                    FABLE.review_plan(**request)
+                invoke.assert_not_called()
+
+    def test_changed_surface_does_not_authorize_plan_growth(self) -> None:
+        first = self.call_provider(
+            self.request(session="growth-auth"),
+            self.revise_with(self.finding("F-1")),
+        )
+        request = self.request(
+            session="growth-auth",
+            round_number=2,
+            previous=first["review_attestation_sha256"],
+            plan_version=2,
+            plan="Expanded plan line. " * 30,
+        )
+        request["scope_growth_authorization"] = {
+            "authorized": False,
+            "provenance": "",
+        }
+        request["findings_ledger"] = [
+            {"id": "F-1", "disposition": "OPEN", "reason": "Still blocking."}
+        ]
+        result = self.call_provider(
+            request,
+            self.revise_with(self.finding("F-1"), self.finding("F-2", late=True)),
+        )
+        self.assertEqual(result["stop_reason"], "UNAUTHORIZED_PLAN_GROWTH")
+
+    def test_scope_growth_requires_independent_nonempty_provenance(self) -> None:
+        for authorization in (
+            {"authorized": True, "provenance": ""},
+            {"authorized": False, "provenance": "user approved growth"},
+            {"authorized": 1, "provenance": "user approved growth"},
+            {"authorized": True, "provenance": "x", "extra": True},
+        ):
+            request = self.request(session=f"auth-{len(FABLE._REVIEW_SESSIONS)}")
+            request["scope_growth_authorization"] = authorization
+            with self.subTest(authorization=authorization), mock.patch.object(
+                FABLE, "_invoke_fable"
+            ) as invoke:
+                with self.assertRaises(FABLE.AdvisorError):
+                    FABLE.review_plan(**request)
+                invoke.assert_not_called()
+
+    def test_independently_authorized_scope_growth_does_not_trigger_policy_halt(self) -> None:
+        first = self.call_provider(
+            self.request(session="growth-authorized"),
+            self.revise_with(self.finding("F-1")),
+        )
+        request = self.request(
+            session="growth-authorized",
+            round_number=2,
+            previous=first["review_attestation_sha256"],
+            plan_version=2,
+            plan="Expanded authorized plan line. " * 30,
+        )
+        request["scope_growth_authorization"] = {
+            "authorized": True,
+            "provenance": "User approval recorded in authority event AUTH-7.",
+        }
+        result = self.call_provider(
+            request,
+            self.revise_with(self.finding("F-1"), self.finding("F-2", late=True)),
+        )
+        self.assertIsNone(result["stop_reason"])
+        self.assertTrue(result["review_session"]["scope_growth_authorized"])
+        self.assertRegex(
+            result["review_session"]["scope_growth_provenance_sha256"],
+            r"^[0-9a-f]{64}$",
+        )
+
+    def test_failed_model_attempts_exhaust_the_five_review_budget(self) -> None:
+        request = self.request(session="attempt-budget")
+        with mock.patch.object(
+            FABLE,
+            "_invoke_fable",
+            side_effect=FABLE.AdvisorError("invalid runtime identity"),
+        ) as invoke:
+            for _ in range(5):
+                with self.assertRaisesRegex(FABLE.AdvisorError, "identity"):
+                    FABLE.review_plan(**request)
+            with self.assertRaisesRegex(FABLE.AdvisorError, "attempt|terminal|five"):
+                FABLE.review_plan(**request)
+            self.assertEqual(invoke.call_count, 5)
+
+    def test_failed_round_retry_must_replay_the_exact_request(self) -> None:
+        request = self.request(session="attempt-replay")
+        with mock.patch.object(
+            FABLE,
+            "_invoke_fable",
+            side_effect=FABLE.AdvisorError("provider schema failed"),
+        ) as invoke:
+            with self.assertRaises(FABLE.AdvisorError):
+                FABLE.review_plan(**request)
+            changed = dict(request)
+            changed["current_plan"] = "mutated retry"
+            changed["plan_sha256"] = hashlib.sha256(b"mutated retry").hexdigest()
+            with self.assertRaisesRegex(FABLE.AdvisorError, "replay|request"):
+                FABLE.review_plan(**changed)
+            with self.assertRaises(FABLE.AdvisorError):
+                FABLE.review_plan(**request)
+            self.assertEqual(invoke.call_count, 2)
 
     def test_scope_and_plan_hashes_are_recomputed_before_model_execution(self) -> None:
         for field in ("original_scope_sha256", "plan_sha256"):
@@ -2097,7 +2246,11 @@ class AdvisorSessionContractTests(unittest.TestCase):
     def test_nested_findings_ledger_counts_toward_the_prompt_limit(self) -> None:
         request = self.request(session="oversized-ledger")
         request["findings_ledger"] = [
-            {"id": "F-1", "disposition": "x" * FABLE.MAX_INPUT_CHARS}
+            {
+                "id": "F-1",
+                "disposition": "OPEN",
+                "reason": "x" * FABLE.MAX_INPUT_CHARS,
+            }
         ]
         with mock.patch.object(FABLE, "_invoke_fable") as invoke:
             with self.assertRaisesRegex(FABLE.AdvisorError, "character limit"):
@@ -2467,6 +2620,44 @@ class AdvisorSessionContractTests(unittest.TestCase):
             time.sleep(1.0)
             self.assertFalse(marker.exists())
 
+    def test_windows_timeout_escalation_uses_bounded_tree_kill(self) -> None:
+        process = mock.Mock()
+        process.pid = 4242
+        process.poll.return_value = None
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired(["claude"], 1),
+            ("", ""),
+        ]
+        tree_kill = subprocess.CompletedProcess(["taskkill"], 0, "", "")
+        with (
+            mock.patch.object(FABLE.os, "name", "nt"),
+            mock.patch.object(FABLE.signal, "CTRL_BREAK_EVENT", 1, create=True),
+            mock.patch.object(FABLE.subprocess, "run", return_value=tree_kill) as run,
+        ):
+            self.assertEqual(FABLE._terminate_process_group(process), "killed")
+        command = run.call_args.args[0]
+        self.assertEqual(command, ["taskkill", "/PID", "4242", "/T", "/F"])
+        self.assertLessEqual(run.call_args.kwargs["timeout"], 10)
+        process.kill.assert_not_called()
+
+    def test_windows_tree_kill_failure_is_fail_closed_and_reaps_child(self) -> None:
+        process = mock.Mock()
+        process.pid = 4242
+        process.poll.return_value = None
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired(["claude"], 1),
+            ("", ""),
+        ]
+        tree_kill = subprocess.CompletedProcess(["taskkill"], 1, "", "failed")
+        with (
+            mock.patch.object(FABLE.os, "name", "nt"),
+            mock.patch.object(FABLE.signal, "CTRL_BREAK_EVENT", 1, create=True),
+            mock.patch.object(FABLE.subprocess, "run", return_value=tree_kill),
+            self.assertRaisesRegex(FABLE.AdvisorError, "process tree"),
+        ):
+            FABLE._terminate_process_group(process)
+        process.kill.assert_called_once_with()
+
     def test_mcp_timeout_exceeds_child_timeout_plus_teardown_reserve(self) -> None:
         mcp = json.loads(
             (
@@ -2518,6 +2709,30 @@ class AdvisorSessionContractTests(unittest.TestCase):
         self.assertEqual(evidenced["decision"], "PLAN_REVISE")
         self.assertEqual(evidenced["blocking_findings"][0]["class"], "A")
         self.assertFalse(evidenced["terminal"])
+
+
+class McpTransportBoundsTests(unittest.TestCase):
+    def test_bounded_reader_rejects_oversize_depth_and_resource_failure(self) -> None:
+        oversized = io.BytesIO(b"{" + b" " * FABLE.MAX_MCP_REQUEST_BYTES + b"}\n")
+        deeply_nested = io.BytesIO(
+            b'{"id":1,"method":"ping","params":'
+            + b"[" * 80
+            + b"]" * 80
+            + b"}\n"
+        )
+        malformed_utf8 = io.BytesIO(b"\xff\n")
+        failing = mock.Mock()
+        failing.readline.side_effect = MemoryError
+        for stream in (oversized, deeply_nested, malformed_utf8, failing):
+            with self.subTest(stream=stream), self.assertRaisesRegex(
+                FABLE.McpProtocolError, "bounded JSON-RPC request"
+            ):
+                FABLE._read_mcp_request(stream)
+
+    def test_bounded_reader_accepts_one_small_object_and_eof(self) -> None:
+        stream = io.BytesIO(b'{"jsonrpc":"2.0","id":1,"method":"ping"}\n')
+        self.assertEqual(FABLE._read_mcp_request(stream)["method"], "ping")
+        self.assertIsNone(FABLE._read_mcp_request(stream))
 
 
 if __name__ == "__main__":

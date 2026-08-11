@@ -63,7 +63,14 @@ MAX_INPUT_CHARS = 200_000
 MAX_DIAGNOSTIC_OUTPUT_CHARS = 8_192
 MAX_REVIEW_SESSIONS = 128
 MAX_REVIEW_ROUNDS = 5
+MAX_REVIEW_ATTEMPTS = 5
+MAX_MCP_REQUEST_BYTES = 256_000
+MAX_MCP_JSON_DEPTH = 32
+MAX_MCP_JSON_NODES = 10_000
 SHA256_PATTERN = "^[0-9a-f]{64}$"
+CURRENT_STATE_SCHEMA = 6
+CURRENT_POLICY_VERSION = 6
+LEDGER_DISPOSITIONS = frozenset({"OPEN", "INCORPORATED", "REJECTED", "DEFERRED"})
 REVIEW_REQUEST_FIELDS = (
     "review_session_id",
     "round_number",
@@ -78,6 +85,7 @@ REVIEW_REQUEST_FIELDS = (
     "plan_sha256",
     "current_plan",
     "changed_surface",
+    "scope_growth_authorization",
     "findings_ledger",
 )
 # Process-local safety boundary. Values deliberately contain only bounded hashes,
@@ -301,6 +309,10 @@ class AdvisorError(RuntimeError):
     """Fail-closed error for any bundled Claude bridge operation."""
 
 
+class McpProtocolError(ValueError):
+    """One bounded, deterministic JSON-RPC transport failure."""
+
+
 class ClaudeProcessFailure(AdvisorError):
     """Bounded projection of a nonzero Claude model subprocess exit."""
 
@@ -507,10 +519,42 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> str:
         process.communicate(timeout=PROCESS_TEARDOWN_GRACE_SECONDS)
         return "terminated"
     except (OSError, subprocess.TimeoutExpired):
+        if os.name == "nt":
+            try:
+                result = subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=min(PROCESS_TEARDOWN_RESERVE_SECONDS, 10),
+                    check=False,
+                    shell=False,
+                    env=sanitized_environment(),
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                result = None
+            if result is None or result.returncode != 0:
+                try:
+                    process.kill()
+                    process.communicate(timeout=PROCESS_TEARDOWN_GRACE_SECONDS)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+                raise AdvisorError(
+                    "Could not terminate the complete Claude process tree."
+                )
+            try:
+                process.communicate(timeout=PROCESS_TEARDOWN_GRACE_SECONDS)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                raise AdvisorError(
+                    "Could not reap the terminated Claude process tree."
+                ) from exc
+            return "killed"
         try:
-            if os.name == "nt":
-                process.kill()
-            else:
+            if process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
@@ -639,6 +683,14 @@ def _read_routing_state(home: Path | None = None) -> dict[str, Any]:
         state = routing_state.validate_routing_state(payload)
     except routing_state.RoutingStateError as exc:
         raise AdvisorError("The saved routing state is invalid.") from exc
+    if (
+        state["schema"] != CURRENT_STATE_SCHEMA
+        or state["policy_version"] != CURRENT_POLICY_VERSION
+    ):
+        raise AdvisorError(
+            "The saved routing state does not use the current policy; run setup to "
+            "migrate it before using the bundled Claude bridge."
+        )
     config_file = state["config_file"]
     try:
         belongs_to_home = (
@@ -1129,6 +1181,51 @@ def _basis_array(value: Any, field: str) -> list[dict[str, str]]:
     return result
 
 
+def _findings_ledger(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list) or len(value) > 500:
+        raise AdvisorError("Findings ledger must be a bounded array.")
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict) or set(item) != {"id", "disposition", "reason"}:
+            raise AdvisorError(f"Findings ledger item {index} has invalid fields.")
+        finding_id = _stable_id(item["id"], f"findings_ledger[{index}].id")
+        if finding_id in seen:
+            raise AdvisorError("Findings ledger contains a duplicate finding ID.")
+        seen.add(finding_id)
+        disposition = item["disposition"]
+        if disposition not in LEDGER_DISPOSITIONS:
+            raise AdvisorError("Findings ledger contains an invalid disposition.")
+        normalized.append(
+            {
+                "id": finding_id,
+                "disposition": disposition,
+                "reason": _bounded_string(
+                    item["reason"], f"findings_ledger[{index}].reason"
+                ),
+            }
+        )
+    return normalized
+
+
+def _scope_growth_authorization(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {"authorized", "provenance"}:
+        raise AdvisorError("Scope growth authorization has invalid fields.")
+    authorized = value["authorized"]
+    provenance = value["provenance"]
+    if type(authorized) is not bool or not isinstance(provenance, str):
+        raise AdvisorError("Scope growth authorization is malformed.")
+    if authorized:
+        if not provenance.strip() or len(provenance) > 4_096:
+            raise AdvisorError(
+                "Authorized scope growth requires bounded independent provenance."
+            )
+        provenance = provenance.strip()
+    elif provenance:
+        raise AdvisorError("Unauthorized scope growth cannot claim provenance.")
+    return {"authorized": authorized, "provenance": provenance}
+
+
 def _validate_review_request(
     *,
     review_session_id: Any,
@@ -1144,6 +1241,7 @@ def _validate_review_request(
     plan_sha256: Any,
     current_plan: Any,
     changed_surface: Any,
+    scope_growth_authorization: Any,
     findings_ledger: Any,
 ) -> dict[str, Any]:
     session_id = _stable_id(review_session_id, "review_session_id")
@@ -1170,12 +1268,6 @@ def _validate_review_request(
     changed = _string_array(changed_surface, "changed_surface")
     if len(set(changed)) != len(changed) or not set(changed).issubset(basis_ids):
         raise AdvisorError("Changed surface contains an unknown or duplicate basis ID.")
-    if not isinstance(findings_ledger, list) or len(findings_ledger) > 500:
-        raise AdvisorError("Findings ledger must be a bounded array.")
-    for index, item in enumerate(findings_ledger):
-        if not isinstance(item, dict):
-            raise AdvisorError(f"Findings ledger item {index} must be an object.")
-
     request = {
         "review_session_id": session_id,
         "round_number": round_number,
@@ -1190,7 +1282,10 @@ def _validate_review_request(
         "plan_sha256": plan_sha256,
         "current_plan": _bounded_string(current_plan, "current_plan"),
         "changed_surface": changed,
-        "findings_ledger": findings_ledger,
+        "scope_growth_authorization": _scope_growth_authorization(
+            scope_growth_authorization
+        ),
+        "findings_ledger": _findings_ledger(findings_ledger),
     }
     if len(_canonical_json(request)) > MAX_INPUT_CHARS:
         raise AdvisorError("Plan review input exceeds the combined character limit.")
@@ -1209,31 +1304,77 @@ def _validate_review_request(
     return request
 
 
-def _validate_session_predecessor(request: dict[str, Any]) -> dict[str, Any] | None:
+def _reserve_review_attempt(request: dict[str, Any]) -> dict[str, Any] | None:
     session_id = request["review_session_id"]
     round_number = request["round_number"]
     state = _REVIEW_SESSIONS.get(session_id)
+    request_sha256 = _sha256_text(_canonical_json(request))
     if round_number == 1:
         if request["previous_review_sha256"]:
             raise AdvisorError("Round one must begin with an empty predecessor hash.")
-        if state is not None:
-            raise AdvisorError("Advisor review round one cannot replay an existing session.")
-        if len(_REVIEW_SESSIONS) >= MAX_REVIEW_SESSIONS:
-            raise AdvisorError("Advisor review session capacity is exhausted.")
-        return None
-    if state is None:
-        raise AdvisorError("A bridge restart requires a new Advisor session at round one.")
+        if request["findings_ledger"]:
+            raise AdvisorError("Round one findings ledger must be empty.")
+        if state is None:
+            if len(_REVIEW_SESSIONS) >= MAX_REVIEW_SESSIONS:
+                raise AdvisorError("Advisor review session capacity is exhausted.")
+            state = {
+                "round_number": 0,
+                "plan_version": 0,
+                "previous_review_sha256": "",
+                "terminal": False,
+                "scope_sha256": request["original_scope_sha256"],
+                "plan_sha256": "",
+                "plan_size": 0,
+                "blocking_ids": [],
+                "all_finding_ids": [],
+                "non_converging_rounds": 0,
+                "attempt_count": 0,
+                "pending_round": None,
+                "pending_request_sha256": None,
+            }
+            _REVIEW_SESSIONS[session_id] = state
+        elif state["round_number"] != 0:
+            raise AdvisorError("Advisor review round one cannot replay a completed session.")
+    else:
+        if state is None:
+            raise AdvisorError(
+                "A bridge restart requires a new Advisor session at round one."
+            )
+        if state["terminal"]:
+            raise AdvisorError("The Advisor review session is terminal.")
+        if round_number != state["round_number"] + 1:
+            raise AdvisorError("Advisor review rounds must be strictly sequential.")
+        if request["previous_review_sha256"] != state["previous_review_sha256"]:
+            raise AdvisorError("Advisor predecessor attestation does not match.")
+        if request["original_scope_sha256"] != state["scope_sha256"]:
+            raise AdvisorError("Advisor immutable scope hash changed during the session.")
+        if request["plan_version"] <= state["plan_version"]:
+            raise AdvisorError("Advisor plan version must increase monotonically.")
+        ledger_ids = {item["id"] for item in request["findings_ledger"]}
+        if ledger_ids != set(state["all_finding_ids"]):
+            raise AdvisorError(
+                "Findings ledger must exactly cover all predecessor finding IDs."
+            )
+
     if state["terminal"]:
         raise AdvisorError("The Advisor review session is terminal.")
-    if round_number != state["round_number"] + 1:
-        raise AdvisorError("Advisor review rounds must be strictly sequential.")
-    if request["previous_review_sha256"] != state["previous_review_sha256"]:
-        raise AdvisorError("Advisor predecessor attestation does not match.")
-    if request["original_scope_sha256"] != state["scope_sha256"]:
-        raise AdvisorError("Advisor immutable scope hash changed during the session.")
-    if request["plan_version"] <= state["plan_version"]:
-        raise AdvisorError("Advisor plan version must increase monotonically.")
-    return state
+    if state["attempt_count"] >= MAX_REVIEW_ATTEMPTS:
+        state["terminal"] = True
+        raise AdvisorError("The five-attempt Advisor review budget is exhausted.")
+    if state["pending_round"] is not None:
+        if (
+            state["pending_round"] != round_number
+            or state["pending_request_sha256"] != request_sha256
+        ):
+            raise AdvisorError(
+                "A failed Advisor round may retry only the exact request replay."
+            )
+    else:
+        state["pending_round"] = round_number
+        state["pending_request_sha256"] = request_sha256
+    previous_state = dict(state) if state["round_number"] else None
+    state["attempt_count"] += 1
+    return previous_state
 
 
 def _validate_review_result(
@@ -1410,6 +1551,7 @@ def review_plan(
     plan_sha256: Any,
     current_plan: Any,
     changed_surface: Any,
+    scope_growth_authorization: Any,
     findings_ledger: Any,
 ) -> dict[str, Any]:
     request = _validate_review_request(
@@ -1426,24 +1568,44 @@ def review_plan(
         plan_sha256=plan_sha256,
         current_plan=current_plan,
         changed_surface=changed_surface,
+        scope_growth_authorization=scope_growth_authorization,
         findings_ledger=findings_ledger,
     )
-    previous_state = _validate_session_predecessor(request)
-    invocation = _invoke_fable(
-        operation="plan review",
-        seat="advisor",
-        prompt=_canonical_json(request),
-        system_prompt=ADVISOR_SYSTEM_PROMPT,
-        allowed_signals={"PLAN_APPROVED", "PLAN_REVISE"},
-    )
-    if len(invocation) != 6:
-        raise AdvisorError("Claude plan review omitted runtime attestation.")
-    provider_value, _response, route, auth, used_models, runtime_attestation = invocation
-    provider = _validate_review_result(
-        provider_value,
-        request=request,
-        previous_state=previous_state,
-    )
+    previous_state = _reserve_review_attempt(request)
+    session_state = _REVIEW_SESSIONS[review_session_id]
+    try:
+        invocation = _invoke_fable(
+            operation="plan review",
+            seat="advisor",
+            prompt=_canonical_json(request),
+            system_prompt=ADVISOR_SYSTEM_PROMPT,
+            allowed_signals={"PLAN_APPROVED", "PLAN_REVISE"},
+        )
+        if len(invocation) != 6:
+            raise AdvisorError("Claude plan review omitted runtime attestation.")
+        (
+            provider_value,
+            _response,
+            route,
+            auth,
+            used_models,
+            runtime_attestation,
+        ) = invocation
+        provider = _validate_review_result(
+            provider_value,
+            request=request,
+            previous_state=previous_state,
+        )
+    except AdvisorError:
+        if session_state["attempt_count"] >= MAX_REVIEW_ATTEMPTS:
+            session_state["terminal"] = True
+        raise
+    except (TypeError, ValueError) as exc:
+        if session_state["attempt_count"] >= MAX_REVIEW_ATTEMPTS:
+            session_state["terminal"] = True
+        raise AdvisorError(
+            "Claude plan review returned invalid structured output."
+        ) from exc
     blocking_ids = [
         item.get("id")
         for item in provider["blocking_findings"]
@@ -1474,9 +1636,16 @@ def review_plan(
         stop_reason = "PLAN_APPROVED"
     elif consecutive_non_converging >= 2:
         stop_reason = "NON_CONVERGING_REVIEW"
-    elif plan_growth_ratio > 0.25 and new_blockers and not changed_surface:
+    elif (
+        plan_growth_ratio > 0.25
+        and new_blockers
+        and not request["scope_growth_authorization"]["authorized"]
+    ):
         stop_reason = "UNAUTHORIZED_PLAN_GROWTH"
-    elif round_number == MAX_REVIEW_ROUNDS:
+    elif (
+        round_number == MAX_REVIEW_ROUNDS
+        or session_state["attempt_count"] == MAX_REVIEW_ATTEMPTS
+    ):
         stop_reason = "MAX_REVIEW_ROUNDS"
     terminal = stop_reason is not None
     blocking_by_class = {
@@ -1512,6 +1681,15 @@ def review_plan(
             "original_scope_sha256": original_scope_sha256,
             "plan_sha256": plan_sha256,
             "previous_review_sha256": previous_review_sha256,
+            "attempt_count": session_state["attempt_count"],
+            "scope_growth_authorized": request["scope_growth_authorization"][
+                "authorized"
+            ],
+            "scope_growth_provenance_sha256": (
+                _sha256_text(request["scope_growth_authorization"]["provenance"])
+                if request["scope_growth_authorization"]["authorized"]
+                else None
+            ),
         },
         "convergence": convergence,
         "runtime_attestation": runtime_attestation,
@@ -1521,22 +1699,31 @@ def review_plan(
     }
     result["review_attestation_sha256"] = _sha256_text(_canonical_json(result))
     all_finding_ids = {
-        item["id"] for item in (*provider["blocking_findings"], *provider["c_backlog"])
+        item["id"]
+        for item in (
+            *provider["blocking_findings"],
+            *provider["c_backlog"],
+            *provider["new_scope_requests"],
+        )
     }
     if previous_state is not None:
         all_finding_ids.update(previous_state["all_finding_ids"])
-    _REVIEW_SESSIONS[review_session_id] = {
-        "round_number": round_number,
-        "plan_version": plan_version,
-        "previous_review_sha256": result["review_attestation_sha256"],
-        "terminal": terminal,
-        "scope_sha256": original_scope_sha256,
-        "plan_sha256": plan_sha256,
-        "plan_size": len(current_plan),
-        "blocking_ids": sorted(blocking_ids),
-        "all_finding_ids": sorted(all_finding_ids),
-        "non_converging_rounds": consecutive_non_converging,
-    }
+    session_state.update(
+        {
+            "round_number": round_number,
+            "plan_version": plan_version,
+            "previous_review_sha256": result["review_attestation_sha256"],
+            "terminal": terminal,
+            "scope_sha256": original_scope_sha256,
+            "plan_sha256": plan_sha256,
+            "plan_size": len(current_plan),
+            "blocking_ids": sorted(blocking_ids),
+            "all_finding_ids": sorted(all_finding_ids),
+            "non_converging_rounds": consecutive_non_converging,
+            "pending_round": None,
+            "pending_request_sha256": None,
+        }
+    )
     return result
 
 
@@ -1600,6 +1787,19 @@ def tool_definitions() -> list[dict[str, Any]]:
         "required": ["id", "description"],
         "additionalProperties": False,
     }
+    ledger_item = {
+        "type": "object",
+        "properties": {
+            "id": stable_id,
+            "disposition": {
+                "type": "string",
+                "enum": sorted(LEDGER_DISPOSITIONS),
+            },
+            "reason": {"type": "string", "minLength": 1, "maxLength": MAX_INPUT_CHARS},
+        },
+        "required": ["id", "disposition", "reason"],
+        "additionalProperties": False,
+    }
     return [
         {
             "name": "create_plan",
@@ -1650,7 +1850,16 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "plan_sha256": hash_property,
                     "current_plan": string_property,
                     "changed_surface": {"type": "array", "items": stable_id, "maxItems": 100, "uniqueItems": True},
-                    "findings_ledger": {"type": "array", "items": {"type": "object"}, "maxItems": 500},
+                    "scope_growth_authorization": {
+                        "type": "object",
+                        "properties": {
+                            "authorized": {"type": "boolean"},
+                            "provenance": {"type": "string", "maxLength": 4096},
+                        },
+                        "required": ["authorized", "provenance"],
+                        "additionalProperties": False,
+                    },
+                    "findings_ledger": {"type": "array", "items": ledger_item, "maxItems": 500, "uniqueItems": True},
                 },
                 "required": list(REVIEW_REQUEST_FIELDS),
                 "additionalProperties": False,
@@ -1696,7 +1905,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
             # compatibility; the tool metadata describes either sealed model.
             "serverInfo": {
                 "name": "codex-orchestration-fable-advisor",
-                "version": "2.0.0",
+                "version": "3.0.0",
             },
         }
     elif method == "ping":
@@ -1759,22 +1968,68 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
 
+def _validate_mcp_json_resources(value: Any) -> None:
+    stack = [(value, 1)]
+    nodes = 0
+    while stack:
+        current, depth = stack.pop()
+        nodes += 1
+        if depth > MAX_MCP_JSON_DEPTH or nodes > MAX_MCP_JSON_NODES:
+            raise McpProtocolError("Invalid bounded JSON-RPC request.")
+        if isinstance(current, dict):
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)
+
+
+def _read_mcp_request(stream: Any) -> dict[str, Any] | None:
+    try:
+        raw = stream.readline(MAX_MCP_REQUEST_BYTES + 1)
+    except (OSError, MemoryError, OverflowError) as exc:
+        raise McpProtocolError("Invalid bounded JSON-RPC request.") from exc
+    if raw in {b"", ""}:
+        return None
+    if not isinstance(raw, bytes) or len(raw) > MAX_MCP_REQUEST_BYTES:
+        raise McpProtocolError("Invalid bounded JSON-RPC request.")
+    try:
+        decoded = raw.decode("utf-8")
+        request = json.loads(decoded)
+        if not isinstance(request, dict):
+            raise ValueError("request must be an object")
+        _validate_mcp_json_resources(request)
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        RecursionError,
+        MemoryError,
+        ValueError,
+    ) as exc:
+        raise McpProtocolError("Invalid bounded JSON-RPC request.") from exc
+    return request
+
+
+def _write_protocol_error() -> None:
+    response = {
+        "jsonrpc": "2.0",
+        "id": None,
+        "error": {"code": -32700, "message": "Invalid bounded JSON-RPC request."},
+    }
+    print(json.dumps(response, separators=(",", ":")), flush=True)
+
+
 def main() -> int:
-    for line in sys.stdin:
+    stream = getattr(sys.stdin, "buffer", sys.stdin)
+    while True:
         try:
-            request = json.loads(line)
-            if not isinstance(request, dict):
-                raise ValueError("request must be an object")
-            response = handle_request(request)
-        except (json.JSONDecodeError, ValueError) as exc:
-            response = {
-                "jsonrpc": "2.0",
-                "id": None,
-                "error": {"code": -32700, "message": str(exc)},
-            }
+            request = _read_mcp_request(stream)
+        except McpProtocolError:
+            _write_protocol_error()
+            return 1
+        if request is None:
+            return 0
+        response = handle_request(request)
         if response is not None:
             print(json.dumps(response, separators=(",", ":")), flush=True)
-    return 0
 
 
 if __name__ == "__main__":

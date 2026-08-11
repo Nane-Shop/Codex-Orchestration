@@ -85,7 +85,7 @@ For Claude Fable 5 or Claude Opus 5 it names the enabled bundled MCP server and 
 
 The custom mode text is visible in spawned children too. That is why it says: if root, orchestrate; if child, stay within the packet and never spawn.
 
-The root stops early on approval and performs at most five Advisor reviews.
+The root stops early on approval and launches at most five Advisor model attempts.
 
 ## Routing strength and its honest boundary
 
@@ -264,7 +264,7 @@ check itself reports authentication unavailable.
 
 The saved policy authorizes the root to call these planning tools and prohibits children from doing so. Current MCP requests provide no caller identity to the server, so that specific caller boundary is instruction-enforced, not server-authenticated. The bridge mechanically uses the same full saved-state validator as native status/repair/disable, restricts the operation surface, and runs the selected Claude model without tools or persistence.
 
-Saved state compatibility is explicit: schema 1 must carry policy version 1 and predates Fable and Planner; schema 2 must carry policy version 2 and may authorize only the historical Fable Advisor shape; schema 3 must carry policy version 3 and adds Planner; schema 4 must carry policy version 4 and adds the optional direct-model Designer route; schema 5 must carry policy version 5 and adds the Opus-only `claude_subscription` planning route while keeping Fable's legacy route shape unchanged. Schema and policy values must be actual JSON integers, not booleans or floats. Legacy state cannot contain fields introduced later; nested snapshots, scalar conversion, MCP launchers, and routes must match an emitted contract; and managed policy strings must carry the plugin marker before status, seat change, disable, or the bridge trusts them. Designer cannot use a bundled Claude route or a persistent unqualified agent name. Planner/Advisor may contain at most one bundled Claude subscription seat. Unknown extensions intentionally fail closed.
+Saved state compatibility is explicit: schema 1 must carry policy version 1 and predates Fable and Planner; schema 2 must carry policy version 2 and may authorize only the historical Fable Advisor shape; schema 3 must carry policy version 3 and adds Planner; schema 4 must carry policy version 4 and adds the optional direct-model Designer route; schema 5 must carry policy version 5 and adds the Opus-only `claude_subscription` planning route; schema 6 must carry policy version 6 and activates the stateful closure protocol. Schemas 1–5 remain parseable only for safe status, disable, and setup migration. They are not current authorization for the bundled Claude bridge; run setup to emit schema 6 before using it. Schema and policy values must be actual JSON integers, not booleans or floats. Legacy state cannot contain fields introduced later; nested snapshots, scalar conversion, MCP launchers, and routes must match an emitted contract; and managed policy strings must carry the plugin marker before status, seat change, disable, or the bridge trusts them. Designer cannot use a bundled Claude route or a persistent unqualified agent name. Planner/Advisor may contain at most one bundled Claude subscription seat. Unknown extensions intentionally fail closed.
 
 Fable setup defaults to `high`. It accepts the Claude Code effort values `low`, `medium`, `high`, `xhigh`, and `max`; the user-facing label `ultra` normalizes to the effective Claude Code value `max` because the CLI has no separate Ultra setting. Setup checks the installed CLI's advertised choices before persisting the route. The bridge reads only the normalized saved value, so tool callers cannot raise the effort at review time. Existing saved `max` routes remain compatible.
 
@@ -304,17 +304,24 @@ Each Advisor round uses a fresh Claude process inside one bounded process-local
 review session. The caller supplies immutable closure scope, stable criteria and
 safety IDs, recomputed scope/plan hashes, round/predecessor attestation,
 monotonic plan version, changed surface, and compact findings ledger. The bridge
-stores only hashes, versions, IDs, sizes, counters, and terminal state; restart
-requires a new round-one session.
+requires exact unique `{id, disposition, reason}` ledger entries covering every
+predecessor finding ID. It separates ordinary changed surface from an explicit
+scope-growth authorization whose non-empty provenance is hashed in telemetry.
+The bridge stores only hashes, versions, IDs, sizes, counters, and terminal
+state; restart requires a new round-one session.
 
 `PLAN_REVISE` requires an evidenced A, A-uncertain, or B blocker tied to
 approved scope. Optional hardening remains non-blocking `C` backlog, and scope
-requests require user authority. Approval, review five, two consecutive
+requests require user authority. Every launched attempt is reserved before the
+model call, and identity/schema/semantic failure consumes the same five-attempt
+budget. Approval, attempt five, two consecutive
 high-closure rounds that add blockers, or unauthorized plan growth terminates
 the session before Executor work. A halt never becomes approval. Opus runtime
 qualification requires the exact ten-key first-party identity record; numeric-
 only legacy metadata and helpers are rejected. Every Claude process group is
-terminated, escalated, and reaped on timeout.
+terminated, escalated, and reaped on timeout. Windows uses bounded tree kill and
+fails closed if it cannot prove complete-tree termination. MCP server protocol
+3.0.0 bounds input bytes, JSON nesting, and node count before dispatch.
 
 ## Goals and task lifetime
 

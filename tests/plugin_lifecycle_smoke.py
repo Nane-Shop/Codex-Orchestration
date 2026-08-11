@@ -128,6 +128,11 @@ def probe_mcp_subprocess(script: Path, *, cwd: Path, env: dict[str, str]) -> Non
         "codex-orchestration-fable-advisor",
         "installed Fable MCP server identity",
     )
+    assert_equal(
+        server_info.get("version"),
+        "3.0.0",
+        "installed Fable MCP server protocol version",
+    )
     tools = responses[1].get("result", {}).get("tools", [])
     tool_names = {
         tool.get("name") for tool in tools if isinstance(tool, dict)

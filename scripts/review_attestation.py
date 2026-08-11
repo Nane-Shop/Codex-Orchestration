@@ -34,7 +34,7 @@ FIELDS_V1 = {
     "findings_disposition",
 }
 FIELDS_V2 = FIELDS_V1 | {"runtime_probe"}
-FIELDS_V3 = FIELDS_V1 | {"opus_runtime_qualification"}
+FIELDS_V3 = FIELDS_V2 | {"opus_runtime_qualification"}
 RUNTIME_PROBE_FIELDS = {
     "status",
     "provider",
@@ -241,6 +241,7 @@ def _validate_runtime_probe(
     *,
     expected_head: str,
     pull_request_draft: Any,
+    required_for_changed_path: bool = True,
 ) -> None:
     if not isinstance(value, dict) or set(value) != RUNTIME_PROBE_FIELDS:
         raise AttestationError("runtime_probe fields do not match schema 2")
@@ -261,7 +262,7 @@ def _validate_runtime_probe(
                 "runtime_probe tested SHA is stale or does not match the PR head"
             )
         return
-    if pull_request_draft is not True:
+    if required_for_changed_path and pull_request_draft is not True:
         raise AttestationError(
             "an unpassed runtime_probe is allowed only while the pull request is draft"
         )
@@ -398,15 +399,16 @@ def validate_pull_request_event(
         raise AttestationError("attestation reviewed SHA is stale or incorrect")
 
     probe_required = RUNTIME_PROBE_PATH in changed_paths
-    if probe_required and value["schema"] != 2:
+    if probe_required and value["schema"] not in {2, 3}:
         raise AttestationError(
-            "OpenRouter manifest changes require schema 2 runtime_probe evidence"
+            "OpenRouter manifest changes require schema 2 or 3 runtime_probe evidence"
         )
-    if value["schema"] == 2:
+    if value["schema"] in {2, 3}:
         _validate_runtime_probe(
             value["runtime_probe"],
             expected_head=expected_head,
             pull_request_draft=pull_request.get("draft"),
+            required_for_changed_path=probe_required,
         )
     opus_qualification_required = OPUS_QUALIFICATION_PATH in changed_paths
     if opus_qualification_required and value["schema"] != 3:

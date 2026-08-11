@@ -93,8 +93,8 @@ def genuine_state(schema: int) -> dict[str, object]:
 
 
 class RoutingStateTests(unittest.TestCase):
-    def test_genuine_schemas_one_through_five_are_accepted(self) -> None:
-        for schema in (1, 2, 3, 4, 5):
+    def test_genuine_schemas_one_through_six_are_accepted(self) -> None:
+        for schema in (1, 2, 3, 4, 5, 6):
             with self.subTest(schema=schema):
                 state = genuine_state(schema)
                 self.assertIs(STATE.validate_routing_state(state), state)
@@ -124,7 +124,7 @@ class RoutingStateTests(unittest.TestCase):
             return lambda state: state.__setitem__("policy_version", value)
 
         mutations = [
-            *( (f"schema {value!r}", schema(value)) for value in (True, 1.0, "4", None, 0, 6) ),
+            *( (f"schema {value!r}", schema(value)) for value in (True, 1.0, "4", None, 0, 7) ),
             *( (f"policy {value!r}", policy(value)) for value in (True, 4.0, "4", None, 0, 6, 3) ),
             ("missing top key", lambda state: state.pop("managed_by")),
             ("extra top key", lambda state: state.__setitem__("future", True)),
@@ -192,8 +192,8 @@ class RoutingStateTests(unittest.TestCase):
                 with self.assertRaises(STATE.RoutingStateError):
                     STATE.validate_routing_state(state)
 
-    def test_schema_five_opus_route_is_sealed_and_exclusive(self) -> None:
-        state = genuine_state(5)
+    def test_schema_six_opus_route_is_sealed_and_exclusive(self) -> None:
+        state = genuine_state(6)
         state["planner"] = opus_route()
         self.assertIs(STATE.validate_routing_state(state), state)
 
@@ -222,6 +222,10 @@ class RoutingStateTests(unittest.TestCase):
         with self.assertRaises(STATE.RoutingStateError):
             STATE.validate_routing_state(legacy)
 
+        migratable = genuine_state(5)
+        migratable["planner"] = opus_route()
+        self.assertIs(STATE.validate_routing_state(migratable), migratable)
+
     def test_reserved_claude_models_cannot_use_generic_model_routes(self) -> None:
         seats_by_schema = {
             1: ("executor", "advisor"),
@@ -229,6 +233,7 @@ class RoutingStateTests(unittest.TestCase):
             3: ("executor", "planner", "advisor"),
             4: ("executor", "planner", "advisor", "designer"),
             5: ("executor", "planner", "advisor", "designer"),
+            6: ("executor", "planner", "advisor", "designer"),
         }
         for schema, seats in seats_by_schema.items():
             for seat in seats:

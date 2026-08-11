@@ -123,6 +123,7 @@ class ReviewAttestationTests(unittest.TestCase):
 
         pending = body(
             schema=3,
+            runtime_probe=runtime_probe(),
             opus_runtime_qualification=opus_runtime_qualification(),
         )
         self.assertEqual(
@@ -142,6 +143,7 @@ class ReviewAttestationTests(unittest.TestCase):
         )
         passed = body(
             schema=3,
+            runtime_probe=runtime_probe(),
             opus_runtime_qualification=opus_runtime_qualification(
                 status="passed",
                 tested_head_sha=HEAD,
@@ -182,6 +184,7 @@ class ReviewAttestationTests(unittest.TestCase):
                     event(
                         body(
                             schema=3,
+                            runtime_probe=runtime_probe(),
                             opus_runtime_qualification=qualification,
                         ),
                         draft=False,
@@ -223,6 +226,40 @@ class ReviewAttestationTests(unittest.TestCase):
             changed_paths=[ATTESTATION.RUNTIME_PROBE_PATH],
         )
         self.assertEqual(tier, "security-state")
+
+    def test_combined_openrouter_and_advisor_change_requires_both_records(self) -> None:
+        bridge = ATTESTATION.OPUS_QUALIFICATION_PATH
+        combined = body(
+            schema=3,
+            runtime_probe=runtime_probe(),
+            opus_runtime_qualification=opus_runtime_qualification(),
+        )
+        self.assertEqual(
+            ATTESTATION.validate_pull_request_event(
+                event(combined),
+                expected_base=BASE,
+                expected_head=HEAD,
+                changed_paths=[ATTESTATION.RUNTIME_PROBE_PATH, bridge],
+            ),
+            "security-state",
+        )
+        for missing in (
+            body(schema=2, runtime_probe=runtime_probe()),
+            body(
+                schema=3,
+                runtime_probe=runtime_probe(),
+                opus_runtime_qualification=opus_runtime_qualification(),
+            ).replace('"runtime_probe": ', '"missing_runtime_probe": ', 1),
+        ):
+            with self.subTest(missing=missing[:80]), self.assertRaises(
+                ATTESTATION.AttestationError
+            ):
+                ATTESTATION.validate_pull_request_event(
+                    event(missing),
+                    expected_base=BASE,
+                    expected_head=HEAD,
+                    changed_paths=[ATTESTATION.RUNTIME_PROBE_PATH, bridge],
+                )
 
     def test_runtime_probe_pass_is_exact_head_bound_and_allows_ready_pr(self) -> None:
         attestation = body(

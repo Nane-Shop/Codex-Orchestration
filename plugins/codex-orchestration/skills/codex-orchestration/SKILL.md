@@ -489,15 +489,23 @@ The bridge exposes bounded, read-only planning operations. `create_plan` and
 `revise_plan` retain their stateless Planner contracts. `review_plan` requires a
 structured, hash-bound session request: immutable task closure scope, stable
 criteria and safety IDs, round/predecessor attestation, monotonic plan version,
-current plan hash, changed surface, and findings ledger. The bridge recomputes
+current plan hash, changed surface, independent scope-growth authorization, and
+an exact cumulative findings ledger. Each ledger item has only `id`, one of
+`OPEN|INCORPORATED|REJECTED|DEFERRED`, and a non-empty `reason`; later rounds
+must cover every predecessor finding ID exactly once. The bridge recomputes
 hashes, stores only bounded non-secret metadata, rejects replay/skip/restart
-resume, and makes approval, policy halts, convergence halts, and review five
-terminal. `PLAN_REVISE` requires an evidenced A, A-uncertain, or B blocker tied
+resume, and reserves every launched model attempt before execution. Failed
+runtime identity, provider-schema, and semantic validation still consume the
+five-attempt budget. Approval, policy halts, convergence halts, and attempt five
+are terminal. `PLAN_REVISE` requires an evidenced A, A-uncertain, or B blocker tied
 to approved scope; optional hardening is non-blocking `C` backlog and new scope
 requests require user authority. Raw prose never counts as a decision.
 
 Every Claude invocation uses a new process group. Timeout handling terminates,
-escalates, and reaps the complete group before returning a bounded error. The
+escalates, and reaps the complete group before returning a bounded error. POSIX
+uses process-group signals; Windows escalates through bounded `taskkill /T /F`
+and fails closed if complete-tree termination cannot be proven. MCP stdin is
+byte-, nesting-, and node-bounded before JSON-RPC dispatch. The
 public review result includes session/convergence telemetry, exact runtime
 identity, terminal/stop reason, and a canonical response attestation. Opus
 requires the exact current ten-key `modelUsage` record with
@@ -671,17 +679,20 @@ review session:
    revised plan. Reject stale source versions, missing or duplicated findings,
    and empty rationales.
 5. Increment the plan version, recompute its hash, pass the exact prior response
-   attestation, identify the changed surface, and review again. Never invent a
+   attestation, identify the changed surface, and review again. Ordinary changed
+   surface does not authorize plan growth; include independent user-authority
+   provenance only when scope growth was actually approved. Never invent a
    later-round blocker without new evidence or a changed-surface cause.
 6. Honor runtime terminal state. Two consecutive high-closure rounds that add
    blockers halt as `NON_CONVERGING_REVIEW`; plan growth over 25 percent with a
    new blocker and no authorized change halts as `UNAUTHORIZED_PLAN_GROWTH`.
    A halt is never approval.
-7. Stop early on approval. Never exceed five total Advisor reviews.
+7. Stop early on approval. Never exceed five total Advisor model attempts;
+   failed runtime identity, provider-schema, or semantic results still count.
 
 Carry only the immutable closure scope, current plan, and compact cumulative findings ledger;
 do not duplicate transcripts or the detailed runtime schema in policy prose. The
-root owns the canonical plan version, stable IDs, ledger, round count, semantic
+root owns the canonical plan version, stable IDs, ledger, attempt count, semantic
 validation, and Executor release. Planner and Advisor never contact one another directly.
 
 If review five still returns `PLAN_REVISE`, halt before Executor work. Give the user the latest plan and version, complete ledger, latest unresolved findings, and choices to override, re-scope, or change a route. Never label it approved.
