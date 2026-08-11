@@ -2072,6 +2072,24 @@ class AdvisorSessionContractTests(unittest.TestCase):
         ):
             return FABLE.review_plan(**request)
 
+    def provider_with_cumulative_ids(self, total: int) -> dict[str, object]:
+        provider = self.provider_result(approved=False)
+        remaining = total - 1
+        c_count = remaining // 2
+        provider["c_backlog"] = [
+            {
+                "id": f"C-{index}",
+                "summary": "Optional bounded follow-up.",
+                "basis_id": None,
+            }
+            for index in range(c_count)
+        ]
+        provider["new_scope_requests"] = [
+            {"id": f"S-{index}", "summary": "Proposed bounded scope."}
+            for index in range(remaining - c_count)
+        ]
+        return provider
+
     def test_review_tool_schema_is_structured_and_stateful(self) -> None:
         definition = next(
             item for item in FABLE.tool_definitions() if item["name"] == "review_plan"
@@ -2131,6 +2149,63 @@ class AdvisorSessionContractTests(unittest.TestCase):
                 with self.assertRaises(FABLE.AdvisorError):
                     FABLE.review_plan(**request)
                 invoke.assert_not_called()
+
+    def test_exactly_five_hundred_cumulative_ids_allow_a_feasible_next_round(self) -> None:
+        first = self.call_provider(
+            self.request(session="capacity-500"),
+            self.provider_with_cumulative_ids(500),
+        )
+        self.assertEqual(
+            len(FABLE._REVIEW_SESSIONS["capacity-500"]["all_finding_ids"]),
+            500,
+        )
+        second_request = self.request(
+            session="capacity-500",
+            round_number=2,
+            previous=first["review_attestation_sha256"],
+            plan_version=2,
+        )
+        self.assertEqual(len(second_request["findings_ledger"]), 500)
+        second = self.call(second_request, approved=True)
+        self.assertEqual(second["decision"], "PLAN_APPROVED")
+
+    def test_five_hundred_one_cumulative_ids_fail_before_session_commit(self) -> None:
+        request = self.request(session="capacity-501")
+        with self.assertRaisesRegex(FABLE.AdvisorError, "cumulative|capacity|500"):
+            self.call_provider(request, self.provider_with_cumulative_ids(501))
+        failed_state = FABLE._REVIEW_SESSIONS["capacity-501"]
+        self.assertEqual(failed_state["round_number"], 0)
+        self.assertEqual(failed_state["attempt_count"], 1)
+        self.assertEqual(failed_state["pending_round"], 1)
+
+        accepted = self.call_provider(request, self.provider_with_cumulative_ids(500))
+        self.assertEqual(accepted["review_session"]["attempt_count"], 2)
+        self.assertEqual(
+            len(FABLE._REVIEW_SESSIONS["capacity-501"]["all_finding_ids"]),
+            500,
+        )
+
+    def test_prior_five_hundred_ids_plus_one_new_id_fail_cumulatively(self) -> None:
+        first = self.call_provider(
+            self.request(session="carried-capacity"),
+            self.provider_with_cumulative_ids(500),
+        )
+        next_request = self.request(
+            session="carried-capacity",
+            round_number=2,
+            previous=first["review_attestation_sha256"],
+            plan_version=2,
+        )
+        provider = self.provider_result(approved=True)
+        provider["c_backlog"] = [
+            {"id": "C-new", "summary": "One new follow-up.", "basis_id": None}
+        ]
+        with self.assertRaisesRegex(FABLE.AdvisorError, "cumulative|capacity|500"):
+            self.call_provider(next_request, provider)
+        failed_state = FABLE._REVIEW_SESSIONS["carried-capacity"]
+        self.assertEqual(failed_state["round_number"], 1)
+        self.assertEqual(failed_state["attempt_count"], 2)
+        self.assertEqual(failed_state["pending_round"], 2)
 
     def test_changed_surface_does_not_authorize_plan_growth(self) -> None:
         first = self.call_provider(
@@ -2620,12 +2695,127 @@ class AdvisorSessionContractTests(unittest.TestCase):
             time.sleep(1.0)
             self.assertFalse(marker.exists())
 
+    @unittest.skipIf(os.name == "nt", "POSIX process-group assertion")
+    def test_timeout_kills_stubborn_descendant_after_direct_child_exits(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "stubborn-late-marker"
+            child = (
+                "import pathlib,signal,sys,time; "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "time.sleep(0.8); pathlib.Path(sys.argv[1]).write_text('late')"
+            )
+            parent = (
+                "import subprocess,sys,time; "
+                "subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]],"
+                "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,"
+                "stderr=subprocess.DEVNULL); time.sleep(10)"
+            )
+            with self.assertRaisesRegex(FABLE.AdvisorError, "timed out"):
+                FABLE._run_claude_process(
+                    [sys.executable, "-c", parent, child, str(marker)],
+                    input_text="",
+                    timeout_seconds=0.2,
+                    timeout_message="Claude test timed out.",
+                    start_error_message="Could not start Claude test.",
+                )
+            time.sleep(1.0)
+            self.assertFalse(marker.exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX escaped-descendant assertion")
+    def test_timeout_kills_stubborn_descendant_that_escapes_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "escaped-late-marker"
+            child = (
+                "import os,pathlib,signal,sys,time; os.setsid(); "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "time.sleep(0.8); pathlib.Path(sys.argv[1]).write_text('late')"
+            )
+            parent = (
+                "import subprocess,sys,time; "
+                "subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]],"
+                "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,"
+                "stderr=subprocess.DEVNULL); time.sleep(10)"
+            )
+            with self.assertRaisesRegex(FABLE.AdvisorError, "timed out"):
+                FABLE._run_claude_process(
+                    [sys.executable, "-c", parent, child, str(marker)],
+                    input_text="",
+                    timeout_seconds=0.2,
+                    timeout_message="Claude test timed out.",
+                    start_error_message="Could not start Claude test.",
+                )
+            time.sleep(1.0)
+            self.assertFalse(marker.exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX fail-closed teardown assertion")
+    def test_posix_enumeration_failure_still_kills_group_with_bounded_reap(self) -> None:
+        process = mock.Mock()
+        process.pid = 4242
+        process.poll.return_value = None
+        process.communicate.return_value = ("", "")
+        with (
+            mock.patch.object(
+                FABLE,
+                "_posix_descendant_pids",
+                side_effect=FABLE.AdvisorError("enumeration failed"),
+            ),
+            mock.patch.object(FABLE.os, "killpg") as kill_group,
+            mock.patch.object(FABLE, "_posix_group_exists", return_value=False),
+            self.assertRaisesRegex(FABLE.AdvisorError, "enumerate|verify|tree"),
+        ):
+            FABLE._terminate_process_group(process)
+        self.assertEqual(
+            kill_group.call_args_list,
+            [
+                mock.call(4242, FABLE.signal.SIGTERM),
+                mock.call(4242, FABLE.signal.SIGKILL),
+            ],
+        )
+        self.assertTrue(process.communicate.call_args_list)
+        self.assertTrue(
+            all(
+                "timeout" in call.kwargs
+                for call in process.communicate.call_args_list
+            )
+        )
+
+    def test_windows_teardown_does_not_trust_direct_child_exit(self) -> None:
+        process = mock.Mock()
+        process.pid = 4242
+        process.poll.return_value = 0
+        process.communicate.return_value = ("", "")
+        graceful_tree = subprocess.CompletedProcess(["taskkill"], 1, "", "failed")
+        forced_tree = subprocess.CompletedProcess(["taskkill"], 0, "", "")
+        with (
+            mock.patch.object(FABLE.os, "name", "nt"),
+            mock.patch.object(
+                FABLE.subprocess,
+                "run",
+                side_effect=[graceful_tree, forced_tree],
+            ) as run,
+        ):
+            self.assertEqual(FABLE._terminate_process_group(process), "killed")
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [
+                ["taskkill", "/PID", "4242", "/T"],
+                ["taskkill", "/PID", "4242", "/T", "/F"],
+            ],
+        )
+        self.assertTrue(
+            all("timeout" in call.kwargs for call in run.call_args_list)
+        )
+        self.assertTrue(
+            all("timeout" in call.kwargs for call in process.communicate.call_args_list)
+        )
+
     def test_windows_timeout_escalation_uses_bounded_tree_kill(self) -> None:
         process = mock.Mock()
         process.pid = 4242
         process.poll.return_value = None
         process.communicate.side_effect = [
             subprocess.TimeoutExpired(["claude"], 1),
+            ("", ""),
             ("", ""),
         ]
         tree_kill = subprocess.CompletedProcess(["taskkill"], 0, "", "")
@@ -2646,6 +2836,7 @@ class AdvisorSessionContractTests(unittest.TestCase):
         process.poll.return_value = None
         process.communicate.side_effect = [
             subprocess.TimeoutExpired(["claude"], 1),
+            ("", ""),
             ("", ""),
         ]
         tree_kill = subprocess.CompletedProcess(["taskkill"], 1, "", "failed")

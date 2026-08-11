@@ -8,6 +8,10 @@
   Windows process-tree teardown, bound JSON-RPC stdin before parsing, advance
   routing state/policy to schema 6, compose schema-3 release attestations, and
   publish MCP server protocol 3.0.0.
+- Bound each review session to 500 aggregate cumulative finding IDs so every
+  accepted result remains representable by the next exact ledger, and close
+  timeout teardown races where the direct child exits before its stubborn or
+  escaped descendants.
 - Replace the opaque Advisor packet with a hash-bound, process-local review
   session contract that enforces predecessor chains, monotonic versions, five
   rounds, typed task-closure findings, `C` backlog separation, and terminal

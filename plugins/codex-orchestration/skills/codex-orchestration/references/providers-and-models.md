@@ -307,8 +307,10 @@ monotonic plan version, changed surface, and compact findings ledger. The bridge
 requires exact unique `{id, disposition, reason}` ledger entries covering every
 predecessor finding ID. It separates ordinary changed surface from an explicit
 scope-growth authorization whose non-empty provenance is hashed in telemetry.
-The bridge stores only hashes, versions, IDs, sizes, counters, and terminal
-state; restart requires a new round-one session.
+The aggregate cumulative union of blocker, `C` backlog, and scope-request IDs
+is capped at 500 before result acceptance, keeping every accepted round feasible
+for the next exact ledger. The bridge stores only hashes, versions, IDs, sizes,
+counters, and terminal state; restart requires a new round-one session.
 
 `PLAN_REVISE` requires an evidenced A, A-uncertain, or B blocker tied to
 approved scope. Optional hardening remains non-blocking `C` backlog, and scope
@@ -319,8 +321,10 @@ high-closure rounds that add blockers, or unauthorized plan growth terminates
 the session before Executor work. A halt never becomes approval. Opus runtime
 qualification requires the exact ten-key first-party identity record; numeric-
 only legacy metadata and helpers are rejected. Every Claude process group is
-terminated, escalated, and reaped on timeout. Windows uses bounded tree kill and
-fails closed if it cannot prove complete-tree termination. MCP server protocol
+terminated, escalated, and reaped on timeout with bounded waits; POSIX also
+captures escaped descendants before signaling and Windows stages bounded
+`taskkill /T` then `/T /F`. Teardown fails closed when complete-tree termination
+cannot be proven. MCP server protocol
 3.0.0 bounds input bytes, JSON nesting, and node count before dispatch.
 
 ## Goals and task lifetime

@@ -492,7 +492,9 @@ criteria and safety IDs, round/predecessor attestation, monotonic plan version,
 current plan hash, changed surface, independent scope-growth authorization, and
 an exact cumulative findings ledger. Each ledger item has only `id`, one of
 `OPEN|INCORPORATED|REJECTED|DEFERRED`, and a non-empty `reason`; later rounds
-must cover every predecessor finding ID exactly once. The bridge recomputes
+must cover every predecessor finding ID exactly once. The cumulative union of
+blockers, `C` backlog, and scope-request IDs cannot exceed 500, so an accepted
+round always remains representable by the next ledger. The bridge recomputes
 hashes, stores only bounded non-secret metadata, rejects replay/skip/restart
 resume, and reserves every launched model attempt before execution. Failed
 runtime identity, provider-schema, and semantic validation still consume the
@@ -503,8 +505,10 @@ requests require user authority. Raw prose never counts as a decision.
 
 Every Claude invocation uses a new process group. Timeout handling terminates,
 escalates, and reaps the complete group before returning a bounded error. POSIX
-uses process-group signals; Windows escalates through bounded `taskkill /T /F`
-and fails closed if complete-tree termination cannot be proven. MCP stdin is
+snapshots owned descendants before graceful termination, hard-kills both the
+group and any escaped descendants, and bounds every reap. Windows escalates
+through bounded `taskkill /T` and `/T /F`; both platforms fail closed if
+complete-tree termination cannot be proven. MCP stdin is
 byte-, nesting-, and node-bounded before JSON-RPC dispatch. The
 public review result includes session/convergence telemetry, exact runtime
 identity, terminal/stop reason, and a canonical response attestation. Opus

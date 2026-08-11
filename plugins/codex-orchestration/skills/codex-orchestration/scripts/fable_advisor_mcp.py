@@ -64,6 +64,7 @@ MAX_DIAGNOSTIC_OUTPUT_CHARS = 8_192
 MAX_REVIEW_SESSIONS = 128
 MAX_REVIEW_ROUNDS = 5
 MAX_REVIEW_ATTEMPTS = 5
+MAX_REVIEW_FINDING_IDS = 500
 MAX_MCP_REQUEST_BYTES = 256_000
 MAX_MCP_JSON_DEPTH = 32
 MAX_MCP_JSON_NODES = 10_000
@@ -507,59 +508,172 @@ def resolve_claude() -> Path:
     raise AdvisorError("Claude Code is not installed or `claude` is not on PATH.")
 
 
-def _terminate_process_group(process: subprocess.Popen[str]) -> str:
-    if process.poll() is not None:
-        process.communicate()
-        return "completed"
+def _bounded_communicate(process: subprocess.Popen[str], timeout: float) -> bool:
     try:
-        if os.name == "nt":
-            process.send_signal(signal.CTRL_BREAK_EVENT)
-        else:
-            os.killpg(process.pid, signal.SIGTERM)
-        process.communicate(timeout=PROCESS_TEARDOWN_GRACE_SECONDS)
-        return "terminated"
+        process.communicate(timeout=timeout)
+        return True
     except (OSError, subprocess.TimeoutExpired):
-        if os.name == "nt":
-            try:
-                result = subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=min(PROCESS_TEARDOWN_RESERVE_SECONDS, 10),
-                    check=False,
-                    shell=False,
-                    env=sanitized_environment(),
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                result = None
-            if result is None or result.returncode != 0:
-                try:
-                    process.kill()
-                    process.communicate(timeout=PROCESS_TEARDOWN_GRACE_SECONDS)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
-                raise AdvisorError(
-                    "Could not terminate the complete Claude process tree."
-                )
-            try:
-                process.communicate(timeout=PROCESS_TEARDOWN_GRACE_SECONDS)
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-                raise AdvisorError(
-                    "Could not reap the terminated Claude process tree."
-                ) from exc
-            return "killed"
+        return False
+
+
+def _run_taskkill(process_id: int, *, force: bool) -> bool:
+    command = ["taskkill", "/PID", str(process_id), "/T"]
+    if force:
+        command.append("/F")
+    try:
+        result = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=min(PROCESS_TEARDOWN_RESERVE_SECONDS, 10),
+            check=False,
+            shell=False,
+            env=sanitized_environment(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _posix_descendant_pids(process_id: int) -> set[int]:
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=min(PROCESS_TEARDOWN_GRACE_SECONDS, 5),
+            check=False,
+            shell=False,
+            env=sanitized_environment(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AdvisorError("Could not enumerate the Claude process tree.") from exc
+    if result.returncode != 0:
+        raise AdvisorError("Could not enumerate the Claude process tree.")
+    children: dict[int, set[int]] = {}
+    try:
+        for line in result.stdout.splitlines():
+            pid_text, parent_text = line.split()
+            pid = int(pid_text)
+            parent = int(parent_text)
+            children.setdefault(parent, set()).add(pid)
+    except (TypeError, ValueError) as exc:
+        raise AdvisorError("Could not enumerate the Claude process tree.") from exc
+    descendants: set[int] = set()
+    pending = list(children.get(process_id, ()))
+    while pending:
+        descendant = pending.pop()
+        if descendant in descendants:
+            continue
+        descendants.add(descendant)
+        pending.extend(children.get(descendant, ()))
+    return descendants
+
+
+def _signal_posix_processes(process_ids: set[int], signal_number: int) -> None:
+    for process_id in process_ids:
         try:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGKILL)
+            os.kill(process_id, signal_number)
         except ProcessLookupError:
             pass
-        process.communicate()
-        return "killed"
+        except OSError as exc:
+            raise AdvisorError("Could not terminate the complete Claude process tree.") from exc
+
+
+def _posix_process_exists(process_id: int) -> bool:
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _posix_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _terminate_process_group(process: subprocess.Popen[str]) -> str:
+    if os.name == "nt":
+        graceful_tree = _run_taskkill(process.pid, force=False)
+        gracefully_reaped = _bounded_communicate(
+            process, PROCESS_TEARDOWN_GRACE_SECONDS
+        )
+        if graceful_tree and gracefully_reaped:
+            return "killed"
+        forced_tree = _run_taskkill(process.pid, force=True)
+        forcibly_reaped = _bounded_communicate(
+            process, PROCESS_TEARDOWN_RESERVE_SECONDS
+        )
+        if forced_tree and forcibly_reaped:
+            return "killed"
+        try:
+            process.kill()
+        except OSError:
+            pass
+        _bounded_communicate(process, PROCESS_TEARDOWN_GRACE_SECONDS)
+        raise AdvisorError("Could not terminate the complete Claude process tree.")
+
+    teardown_error: AdvisorError | None = None
+    try:
+        descendants = _posix_descendant_pids(process.pid)
+    except AdvisorError as exc:
+        descendants = set()
+        teardown_error = exc
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        teardown_error = teardown_error or AdvisorError(
+            "Could not terminate the complete Claude process tree."
+        )
+    try:
+        _signal_posix_processes(descendants, signal.SIGTERM)
+    except AdvisorError as exc:
+        teardown_error = teardown_error or exc
+    _bounded_communicate(process, PROCESS_TEARDOWN_GRACE_SECONDS)
+    if process.poll() is None:
+        try:
+            descendants.update(_posix_descendant_pids(process.pid))
+        except AdvisorError as exc:
+            teardown_error = teardown_error or exc
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        teardown_error = teardown_error or AdvisorError(
+            "Could not terminate the complete Claude process tree."
+        )
+    try:
+        _signal_posix_processes(descendants, signal.SIGKILL)
+    except AdvisorError as exc:
+        teardown_error = teardown_error or exc
+    if not _bounded_communicate(process, PROCESS_TEARDOWN_RESERVE_SECONDS):
+        raise AdvisorError("Could not reap the terminated Claude process tree.")
+    deadline = time.monotonic() + PROCESS_TEARDOWN_RESERVE_SECONDS
+    while _posix_group_exists(process.pid) or any(
+        _posix_process_exists(process_id) for process_id in descendants
+    ):
+        if time.monotonic() >= deadline:
+            raise AdvisorError("Could not verify complete Claude process-tree teardown.")
+        time.sleep(0.01)
+    if teardown_error is not None:
+        raise AdvisorError(
+            "Could not enumerate or verify the complete Claude process tree."
+        ) from teardown_error
+    return "killed"
 
 
 def _run_claude_process(
@@ -1182,7 +1296,7 @@ def _basis_array(value: Any, field: str) -> list[dict[str, str]]:
 
 
 def _findings_ledger(value: Any) -> list[dict[str, str]]:
-    if not isinstance(value, list) or len(value) > 500:
+    if not isinstance(value, list) or len(value) > MAX_REVIEW_FINDING_IDS:
         raise AdvisorError("Findings ledger must be a bounded array.")
     normalized: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -1400,7 +1514,8 @@ def _validate_review_result(
         or not value["summary"].strip()
         or value["scope_status"] not in {"closed", "open"}
         or any(
-            not isinstance(value[field], list) or len(value[field]) > 500
+            not isinstance(value[field], list)
+            or len(value[field]) > MAX_REVIEW_FINDING_IDS
             for field in ("blocking_findings", "c_backlog", "new_scope_requests")
         )
     ):
@@ -1518,6 +1633,11 @@ def _validate_review_result(
                     item["summary"], "new scope request summary"
                 ),
             }
+        )
+
+    if len(prior_ids | seen_ids) > MAX_REVIEW_FINDING_IDS:
+        raise AdvisorError(
+            "Cumulative Advisor finding IDs exceed the 500-ID session capacity."
         )
 
     if value["signal"] == "PLAN_REVISE" and not normalized_blockers:
@@ -1859,7 +1979,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "required": ["authorized", "provenance"],
                         "additionalProperties": False,
                     },
-                    "findings_ledger": {"type": "array", "items": ledger_item, "maxItems": 500, "uniqueItems": True},
+                    "findings_ledger": {"type": "array", "items": ledger_item, "maxItems": MAX_REVIEW_FINDING_IDS, "uniqueItems": True},
                 },
                 "required": list(REVIEW_REQUEST_FIELDS),
                 "additionalProperties": False,
