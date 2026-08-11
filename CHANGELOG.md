@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.8 — 2026-08-11
+
+- Reduce the bounded Advisor approval loop from eight total reviews to five.
+  Approval still stops the loop early; a fifth `PLAN_REVISE` now halts before
+  Executor work with the latest plan, findings ledger, and unresolved issues.
+
+## 0.9.7 — 2026-08-11
+
+- Give every bundled Fable Advisor launcher an explicit 600-second MCP tool
+  timeout so large plan reviews are not cut off by a shorter host default. The
+  bridge's existing 600-second Claude subprocess bound remains unchanged.
+
 ## 0.9.6 — 2026-08-04
 
 - Accept Claude Code 2.1.220's exact `canonicalModel: claude-opus-5` and

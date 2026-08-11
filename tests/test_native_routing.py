@@ -452,21 +452,21 @@ class NativeRoutingTests(unittest.TestCase):
         self.assertIn("never spawn descendants", mode)
         self.assertIn("Explicit user instructions win", mode)
         self.assertIn("Persistent and task-local Planner and Advisor routes", mode)
-        self.assertEqual(NATIVE.ADVISOR_REVIEW_LIMIT, 8)
-        self.assertIn("at most eight total Advisor reviews", mode)
+        self.assertEqual(NATIVE.ADVISOR_REVIEW_LIMIT, 5)
+        self.assertIn("at most five total Advisor reviews", mode)
         self.assertIn("PLAN_APPROVED ends review early", mode)
-        self.assertIn("rounds two through eight", mode)
+        self.assertIn("rounds two through five", mode)
         self.assertIn(
             "current plan and version plus a compact cumulative ledger, not prior transcripts",
             mode,
         )
-        self.assertIn("round-eight PLAN_REVISE halts before Executor", mode)
+        self.assertIn("round-five PLAN_REVISE halts before Executor", mode)
         self.assertIn("non-approval artifact", mode)
         self.assertIn("NOT_ADVISOR_APPROVED", mode)
         self.assertIn("Planner failure permits the root to take over", mode)
         self.assertIn("stale plan version", mode)
         self.assertIn("invalid or incomplete ledger", mode)
-        stale_limit_word = "fi" + "ve"
+        stale_limit_word = "ei" + "ght"
         self.assertNotIn(f"{stale_limit_word} total Advisor reviews", mode)
         self.assertNotIn(f"round-{stale_limit_word} PLAN_REVISE", mode)
         self.assertNotIn(f"rounds two through {stale_limit_word}", mode)
@@ -518,9 +518,9 @@ class NativeRoutingTests(unittest.TestCase):
         ):
             self.assertIn(expected, mode)
         for hard_coded in (
-            "at most eight total Advisor reviews",
-            "rounds two through eight",
-            "round-eight PLAN_REVISE",
+            "at most five total Advisor reviews",
+            "rounds two through five",
+            "round-five PLAN_REVISE",
         ):
             self.assertNotIn(hard_coded, mode)
 

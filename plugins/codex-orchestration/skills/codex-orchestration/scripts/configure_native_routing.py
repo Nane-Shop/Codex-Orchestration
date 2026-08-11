@@ -43,7 +43,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - Python < 3.11
 
 POLICY_VERSION = 5
 STATE_SCHEMA = 5
-ADVISOR_REVIEW_LIMIT = 8
+ADVISOR_REVIEW_LIMIT = 5
 STATE_FILENAME = ".codex-orchestration-routing.json"
 PROBE_VALUE = "CODEX_ORCHESTRATION_CAPABILITY_PROBE"
 PLUGIN_ID = "codex-orchestration@codex-orchestration"
@@ -457,7 +457,7 @@ class AppServer:
                     "clientInfo": {
                         "name": "codex_orchestration_installer",
                         "title": "Codex Orchestration Installer",
-                        "version": "0.9.6",
+                        "version": "0.9.8",
                     },
                     "capabilities": {"experimentalApi": True},
                 },
