@@ -534,7 +534,10 @@ def main() -> int:
             for expected in (
                 "Explicit seat labels are authoritative",
                 "never reinterpret a supplied `planner:` model as an Advisor",
-                "Fable Planner uses `create_plan` and `revise_plan`",
+                "No separate written plan means no Advisor call",
+                "Do not call Advisor again automatically",
+                "Do not call Reviewer again automatically",
+                "Fable or Opus Planner uses\n`create_plan`",
                 "Designer may edit only explicitly delegated design artifacts",
                 "is Kimi available to use as Designer?",
                 "Implicit invocation is discovery, not mutation authority",
