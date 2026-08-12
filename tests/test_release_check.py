@@ -80,7 +80,7 @@ class TempRepository:
 
 class ReleaseCheckTests(unittest.TestCase):
     def test_checkout_release_metadata_is_consistent(self) -> None:
-        self.assertEqual(RELEASE.run_check(REPO_ROOT, require_tag=False), "0.10.0")
+        self.assertEqual(RELEASE.run_check(REPO_ROOT, require_tag=False), "0.10.1")
         self.assertEqual(
             RELEASE.CANONICAL_SOURCE_URL,
             "https://github.com/Nane-Shop/Codex-Orchestration.git",

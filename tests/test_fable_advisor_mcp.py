@@ -4,6 +4,7 @@ import importlib.util
 import hashlib
 import io
 import json
+import jsonschema
 import os
 from pathlib import Path
 import subprocess
@@ -2056,6 +2057,57 @@ class AdvisorSessionContractTests(unittest.TestCase):
                 "termination_status": "completed",
             },
         )
+
+    def test_provider_schema_matches_exact_post_validator_item_contracts(self) -> None:
+        validator = jsonschema.Draft7Validator(FABLE.PLAN_REVIEW_SCHEMA)
+        valid = self.provider_result(approved=False)
+        valid["c_backlog"] = [
+            {
+                "id": "C-1",
+                "summary": "Optional follow-up outside task closure.",
+                "basis_id": None,
+            }
+        ]
+        valid["new_scope_requests"] = [
+            {"id": "SCOPE-1", "summary": "Authorize a separate follow-up."}
+        ]
+        self.assertEqual(list(validator.iter_errors(valid)), [])
+        normalized = FABLE._validate_review_result(
+            valid,
+            request=self.request(),
+            previous_state=None,
+        )
+        self.assertEqual(normalized["blocking_findings"][0]["id"], "F-1")
+        self.assertEqual(normalized["c_backlog"][0]["id"], "C-1")
+        self.assertEqual(normalized["new_scope_requests"][0]["id"], "SCOPE-1")
+
+        exact_required = {
+            "blocking_findings": {
+                "id",
+                "class",
+                "basis_id",
+                "evidence",
+                "failure_scenario",
+                "smallest_correction",
+                "causal_source",
+                "causal_reference",
+                "supersedes_ids",
+                "new_evidence",
+            },
+            "c_backlog": {"id", "summary", "basis_id"},
+            "new_scope_requests": {"id", "summary"},
+        }
+        for field, required in exact_required.items():
+            with self.subTest(field=field):
+                item_schema = FABLE.PLAN_REVIEW_SCHEMA["properties"][field]["items"]
+                self.assertEqual(set(item_schema.get("required", [])), required)
+                self.assertFalse(item_schema.get("additionalProperties", True))
+                malformed = self.provider_result(approved=field != "blocking_findings")
+                malformed[field] = [{}]
+                self.assertTrue(list(validator.iter_errors(malformed)))
+                extra = json.loads(json.dumps(valid))
+                extra[field][0]["unexpected"] = True
+                self.assertTrue(list(validator.iter_errors(extra)))
 
     def call(self, request: dict[str, object], *, approved: bool) -> dict[str, object]:
         return self.call_provider(

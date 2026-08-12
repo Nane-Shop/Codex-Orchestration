@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.1 — 2026-08-12
+
+- Constrain each provider-facing Advisor finding item to the exact blocker,
+  C-backlog, or scope-request shape enforced by the local post-validator.
+  Missing, extra, and wrongly typed nested fields now fail at the JSON Schema
+  boundary while the session-aware semantic validator remains authoritative.
+- Fix forward under a new plugin/cache identity; the published 0.10.0 payload
+  remains immutable and is never reused for the corrected behavior.
+
 ## 0.10.0 — 2026-08-12
 
 - Close the independent audit findings: bind an exact complete findings ledger,
