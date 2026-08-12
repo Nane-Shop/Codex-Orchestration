@@ -460,6 +460,8 @@ class NativeRoutingTests(unittest.TestCase):
         self.assertIn("at most one Advisor call", mode)
         self.assertIn("one consolidated plan-correction batch", mode)
         self.assertIn("ADVISOR_REVIEWED_WITH_CORRECTIONS", mode)
+        self.assertIn("Planner drafts only the initial plan", mode)
+        self.assertIn("owns the one-shot correction", mode)
         self.assertIn("Do not call Advisor again automatically", mode)
         self.assertIn("Do not replay an Advisor failure automatically", mode)
         self.assertIn("NOT_ADVISOR_APPROVED", mode)

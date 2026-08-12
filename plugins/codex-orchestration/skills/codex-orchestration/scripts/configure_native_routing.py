@@ -1142,8 +1142,9 @@ def build_policy(
         else "Configured custom agents and MCP seats own their provider routes."
     )
     planner_mode = (
-        "When needed, the configured Planner drafts and revises the plan. The root "
-        "supplies bounded context, owns the canonical version, and validates results."
+        "When needed, the configured Planner drafts only the initial plan. The root "
+        "supplies bounded context, owns the canonical version, validates results, "
+        "and owns the one-shot correction after Advisor feedback."
         if planner is not None
         else "No Planner is configured. The root drafts and revises every plan."
     )

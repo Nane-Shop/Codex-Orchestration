@@ -381,6 +381,13 @@ Executor — GPT-5.6 Sol high: Activated
         self.assertIn("one Advisor call", README)
         self.assertIn("one Reviewer", REFERENCE)
         self.assertIn("no automatic replay or re-review", RELEASE)
+        self.assertNotIn("optional Planner drafts and revises", REFERENCE)
+        self.assertNotIn("`create_plan`/`revise_plan`", REFERENCE)
+        self.assertNotIn("wrong routes stop Executor work by default", REFERENCE)
+        self.assertNotIn("run setup to emit schema 6", REFERENCE)
+        self.assertIn("schema 7 must carry policy version 7", REFERENCE)
+        self.assertIn("Schemas 1–6 remain parseable", REFERENCE)
+        self.assertIn("bridge capacity, not an automatic review loop", REFERENCE)
         self.assertEqual(NATIVE_SCRIPT.count("ADVISOR_REVIEW_LIMIT ="), 1)
         # Product/model names and unrelated allowance facts remain unchanged.
         self.assertIn("Claude Fable 5", README)
