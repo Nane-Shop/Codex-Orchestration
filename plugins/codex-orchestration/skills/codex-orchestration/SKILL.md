@@ -700,6 +700,14 @@ review session:
 7. Stop early on approval. Never exceed five total Advisor model attempts;
    failed runtime identity, provider-schema, or semantic results still count.
 
+Every Advisor result ID and causal reference is a compact 1-128 character token
+from `[A-Za-z0-9._:-]`, never prose. An `initial_scope` reference is the exact
+approved basis ID, a `new_evidence` reference is a compact evidence token with
+the explanation kept in `new_evidence`, and a `changed_surface` reference is an
+exact ID from the request's changed surface. The provider schema enforces the
+supported lexical subset; the local validator remains authoritative for bounds,
+membership, lineage, and other cross-field semantics.
+
 Carry only the immutable closure scope, current plan, and compact cumulative findings ledger;
 do not duplicate transcripts or the detailed runtime schema in policy prose. The
 root owns the canonical plan version, stable IDs, ledger, attempt count, semantic

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.10.2 — 2026-08-12
+
+- Restore Claude-supported stable-ID patterns on every Advisor result field
+  that the local post-validator treats as an ID. Schema-valid prose can no
+  longer reach the stricter `causal_reference` validator and consume an
+  attempt without producing `PLAN_APPROVED` or `PLAN_REVISE`.
+- Specify source-dependent causal-reference tokens in the Advisor prompt while
+  keeping length bounds, cross-field membership, and session semantics in the
+  fail-closed local validator. Publish the repair under a new plugin/cache
+  identity rather than changing the installed 0.10.1 payload in place.
+
 ## 0.10.1 — 2026-08-12
 
 - Constrain each provider-facing Advisor finding item to the exact blocker,

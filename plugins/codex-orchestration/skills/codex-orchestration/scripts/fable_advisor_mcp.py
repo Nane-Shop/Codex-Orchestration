@@ -101,6 +101,10 @@ _REVIEW_SESSIONS: dict[str, dict[str, Any]] = {}
 # subset. The local post-validator below remains authoritative for bounds,
 # stable-ID syntax, cross-field semantics, and session lineage.
 _STRING_SCHEMA = {"type": "string"}
+_STABLE_ID_SCHEMA = {
+    "type": "string",
+    "pattern": "^[A-Za-z0-9._:-]+$",
+}
 _STRING_ARRAY_SCHEMA = {
     "type": "array",
     "items": _STRING_SCHEMA,
@@ -108,9 +112,9 @@ _STRING_ARRAY_SCHEMA = {
 _BLOCKING_FINDING_SCHEMA = {
     "type": "object",
     "properties": {
-        "id": _STRING_SCHEMA,
+        "id": _STABLE_ID_SCHEMA,
         "class": {"type": "string", "enum": ["A", "A-uncertain", "B"]},
-        "basis_id": _STRING_SCHEMA,
+        "basis_id": _STABLE_ID_SCHEMA,
         "evidence": {**_STRING_ARRAY_SCHEMA, "minItems": 1},
         "failure_scenario": _STRING_SCHEMA,
         "smallest_correction": _STRING_SCHEMA,
@@ -118,7 +122,7 @@ _BLOCKING_FINDING_SCHEMA = {
             "type": "string",
             "enum": ["initial_scope", "new_evidence", "changed_surface"],
         },
-        "causal_reference": _STRING_SCHEMA,
+        "causal_reference": _STABLE_ID_SCHEMA,
         "supersedes_ids": _STRING_ARRAY_SCHEMA,
         "new_evidence": _STRING_ARRAY_SCHEMA,
     },
@@ -139,7 +143,7 @@ _BLOCKING_FINDING_SCHEMA = {
 _C_BACKLOG_ITEM_SCHEMA = {
     "type": "object",
     "properties": {
-        "id": _STRING_SCHEMA,
+        "id": _STABLE_ID_SCHEMA,
         "summary": _STRING_SCHEMA,
         "basis_id": {"type": ["string", "null"]},
     },
@@ -149,7 +153,7 @@ _C_BACKLOG_ITEM_SCHEMA = {
 _NEW_SCOPE_REQUEST_SCHEMA = {
     "type": "object",
     "properties": {
-        "id": _STRING_SCHEMA,
+        "id": _STABLE_ID_SCHEMA,
         "summary": _STRING_SCHEMA,
     },
     "required": ["id", "summary"],
@@ -248,7 +252,7 @@ STALE_BRIDGE_RECOVERY = (
 ADVISOR_SYSTEM_PROMPT = """You are the configured Claude model acting only as a plan advisor to Codex's root orchestrator.
 Optimize for closure of the supplied user-approved task, not global risk elimination. Review only the approved criteria and safety invariants. Classes A, A-uncertain, and B may block when evidenced and tied to an approved basis. Put optional hardening, refactors, theoretical edges, and reviewer-added criteria in non-blocking C backlog. Put proposed scope changes in non-blocking new_scope_requests. Do not edit, call tools, spawn, contact other seats, or implement.
 
-Return exactly signal, summary, scope_status, blocking_findings, c_backlog, and new_scope_requests under the supplied schema. PLAN_REVISE requires a valid blocker; PLAN_APPROVED requires none. Each blocker needs a stable ID, approved basis ID, evidence, concrete failure scenario, smallest sufficient correction, causal source/reference, superseded IDs, and any new evidence. Preserve IDs. A later new or reopened blocker needs new evidence or a changed-surface causal link. Report only to the root."""
+Return exactly signal, summary, scope_status, blocking_findings, c_backlog, and new_scope_requests under the supplied schema. PLAN_REVISE requires a valid blocker; PLAN_APPROVED requires none. Every ID-valued field, including causal_reference, must be a 1-128 character token matching [A-Za-z0-9._:-]{1,128}; never put prose, spaces, slashes, brackets, or backticks in an ID. Each blocker needs a stable ID, approved basis ID, evidence, concrete failure scenario, smallest sufficient correction, causal source/reference, superseded IDs, and any new evidence. For initial_scope, set causal_reference to the exact approved basis_id. For new_evidence, use a compact stable evidence token such as trace-F-2 and put the explanatory prose in the non-empty new_evidence array. For changed_surface, use an exact ID from changed_surface. Preserve IDs. A later new or reopened blocker needs new evidence or a changed-surface causal link. Report only to the root."""
 
 PLANNER_CREATE_SYSTEM_PROMPT = """You are the configured Claude model acting only as a plan author for Codex's root orchestrator.
 Create a concrete implementation plan from the supplied self-contained packet. Include constraints, ownership, sequencing, acceptance criteria, security and compatibility boundaries, and behavioral plus regression verification. Do not edit files, call tools, spawn agents, contact the Advisor or executors, or attempt implementation.

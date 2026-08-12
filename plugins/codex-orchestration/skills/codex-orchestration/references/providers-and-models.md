@@ -312,6 +312,13 @@ is capped at 500 before result acceptance, keeping every accepted round feasible
 for the next exact ledger. The bridge stores only hashes, versions, IDs, sizes,
 counters, and terminal state; restart requires a new round-one session.
 
+Advisor output IDs and `causal_reference` values are compact 1-128 character
+tokens from `[A-Za-z0-9._:-]`, never prose. `initial_scope` uses the exact
+approved basis ID, `new_evidence` uses a compact evidence token while its prose
+stays in the evidence array, and `changed_surface` uses an exact changed-surface
+ID. Claude's supported schema subset constrains the lexical form; the local
+validator remains authoritative for bounds and request-specific membership.
+
 `PLAN_REVISE` requires an evidenced A, A-uncertain, or B blocker tied to
 approved scope. Optional hardening remains non-blocking `C` backlog, and scope
 requests require user authority. Every launched attempt is reserved before the

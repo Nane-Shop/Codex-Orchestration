@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -2075,6 +2076,9 @@ class AdvisorSessionContractTests(unittest.TestCase):
                 return ["type"]
             if "enum" in schema and value not in schema["enum"]:
                 errors.append("enum")
+            if isinstance(value, str) and "pattern" in schema:
+                if re.fullmatch(str(schema["pattern"]), value) is None:
+                    errors.append("pattern")
             if isinstance(value, dict):
                 properties = schema.get("properties", {})
                 required = set(schema.get("required", []))
@@ -2144,6 +2148,46 @@ class AdvisorSessionContractTests(unittest.TestCase):
                 wrong_type = json.loads(json.dumps(valid))
                 wrong_type[field][0]["id"] = 7
                 self.assertTrue(schema_errors(wrong_type, FABLE.PLAN_REVIEW_SCHEMA))
+
+        prose_reference = json.loads(json.dumps(valid))
+        prose_reference["blocking_findings"][0]["causal_reference"] = (
+            "acceptance criterion AC-1"
+        )
+        self.assertTrue(
+            schema_errors(prose_reference, FABLE.PLAN_REVIEW_SCHEMA),
+            "The provider schema must reject a causal reference that the "
+            "post-validator cannot accept as a stable ID.",
+        )
+        overlong_reference = json.loads(json.dumps(valid))
+        overlong_reference["blocking_findings"][0]["causal_reference"] = "x" * 129
+        with self.assertRaisesRegex(FABLE.AdvisorError, "causal reference"):
+            FABLE._validate_review_result(
+                overlong_reference,
+                request=self.request(),
+                previous_state=None,
+            )
+
+        blocker_schema = FABLE.PLAN_REVIEW_SCHEMA["properties"][
+            "blocking_findings"
+        ]["items"]["properties"]
+        expected_stable_id_pattern = "^[A-Za-z0-9._:-]+$"
+        for field in ("id", "basis_id", "causal_reference"):
+            with self.subTest(stable_id_field=field):
+                self.assertEqual(
+                    blocker_schema[field].get("pattern"),
+                    expected_stable_id_pattern,
+                )
+
+        for required_instruction in (
+            "[A-Za-z0-9._:-]{1,128}",
+            "initial_scope",
+            "exact approved basis_id",
+            "new_evidence",
+            "changed_surface",
+            "exact ID from changed_surface",
+        ):
+            with self.subTest(prompt_instruction=required_instruction):
+                self.assertIn(required_instruction, FABLE.ADVISOR_SYSTEM_PROMPT)
 
         unsupported_raw_keywords = {
             "maxLength",
