@@ -2170,6 +2170,12 @@ class AdvisorSessionContractTests(unittest.TestCase):
         blocker_schema = FABLE.PLAN_REVIEW_SCHEMA["properties"][
             "blocking_findings"
         ]["items"]["properties"]
+        c_backlog_schema = FABLE.PLAN_REVIEW_SCHEMA["properties"]["c_backlog"][
+            "items"
+        ]["properties"]
+        scope_request_schema = FABLE.PLAN_REVIEW_SCHEMA["properties"][
+            "new_scope_requests"
+        ]["items"]["properties"]
         expected_stable_id_pattern = "^[A-Za-z0-9._:-]+$"
         for field in ("id", "basis_id", "causal_reference"):
             with self.subTest(stable_id_field=field):
@@ -2177,6 +2183,33 @@ class AdvisorSessionContractTests(unittest.TestCase):
                     blocker_schema[field].get("pattern"),
                     expected_stable_id_pattern,
                 )
+        self.assertEqual(
+            blocker_schema["supersedes_ids"]["items"].get("pattern"),
+            expected_stable_id_pattern,
+        )
+        self.assertEqual(
+            c_backlog_schema["id"].get("pattern"),
+            expected_stable_id_pattern,
+        )
+        self.assertEqual(
+            c_backlog_schema["basis_id"].get("pattern"),
+            expected_stable_id_pattern,
+        )
+        self.assertEqual(
+            scope_request_schema["id"].get("pattern"),
+            expected_stable_id_pattern,
+        )
+
+        prose_supersedes = json.loads(json.dumps(valid))
+        prose_supersedes["blocking_findings"][0]["supersedes_ids"] = [
+            "finding one"
+        ]
+        self.assertTrue(schema_errors(prose_supersedes, FABLE.PLAN_REVIEW_SCHEMA))
+        prose_c_basis = json.loads(json.dumps(valid))
+        prose_c_basis["c_backlog"] = [
+            {"id": "C-1", "summary": "Optional hardening", "basis_id": "AC one"}
+        ]
+        self.assertTrue(schema_errors(prose_c_basis, FABLE.PLAN_REVIEW_SCHEMA))
 
         for required_instruction in (
             "[A-Za-z0-9._:-]{1,128}",

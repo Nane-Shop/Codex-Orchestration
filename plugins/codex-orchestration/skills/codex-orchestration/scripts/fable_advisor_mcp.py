@@ -105,9 +105,17 @@ _STABLE_ID_SCHEMA = {
     "type": "string",
     "pattern": "^[A-Za-z0-9._:-]+$",
 }
+_NULLABLE_STABLE_ID_SCHEMA = {
+    "type": ["string", "null"],
+    "pattern": "^[A-Za-z0-9._:-]+$",
+}
 _STRING_ARRAY_SCHEMA = {
     "type": "array",
     "items": _STRING_SCHEMA,
+}
+_STABLE_ID_ARRAY_SCHEMA = {
+    "type": "array",
+    "items": _STABLE_ID_SCHEMA,
 }
 _BLOCKING_FINDING_SCHEMA = {
     "type": "object",
@@ -123,7 +131,7 @@ _BLOCKING_FINDING_SCHEMA = {
             "enum": ["initial_scope", "new_evidence", "changed_surface"],
         },
         "causal_reference": _STABLE_ID_SCHEMA,
-        "supersedes_ids": _STRING_ARRAY_SCHEMA,
+        "supersedes_ids": _STABLE_ID_ARRAY_SCHEMA,
         "new_evidence": _STRING_ARRAY_SCHEMA,
     },
     "required": [
@@ -145,7 +153,7 @@ _C_BACKLOG_ITEM_SCHEMA = {
     "properties": {
         "id": _STABLE_ID_SCHEMA,
         "summary": _STRING_SCHEMA,
-        "basis_id": {"type": ["string", "null"]},
+        "basis_id": _NULLABLE_STABLE_ID_SCHEMA,
     },
     "required": ["id", "summary", "basis_id"],
     "additionalProperties": False,
