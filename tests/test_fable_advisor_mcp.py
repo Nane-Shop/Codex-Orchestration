@@ -4,7 +4,6 @@ import importlib.util
 import hashlib
 import io
 import json
-import jsonschema
 import os
 from pathlib import Path
 import subprocess
@@ -2059,7 +2058,40 @@ class AdvisorSessionContractTests(unittest.TestCase):
         )
 
     def test_provider_schema_matches_exact_post_validator_item_contracts(self) -> None:
-        validator = jsonschema.Draft7Validator(FABLE.PLAN_REVIEW_SCHEMA)
+        def schema_errors(value: object, schema: dict[str, object]) -> list[str]:
+            errors: list[str] = []
+            expected_type = schema.get("type")
+            allowed = (
+                expected_type if isinstance(expected_type, list) else [expected_type]
+            )
+            matches_type = any(
+                (kind == "object" and isinstance(value, dict))
+                or (kind == "array" and isinstance(value, list))
+                or (kind == "string" and isinstance(value, str))
+                or (kind == "null" and value is None)
+                for kind in allowed
+            )
+            if not matches_type:
+                return ["type"]
+            if "enum" in schema and value not in schema["enum"]:
+                errors.append("enum")
+            if isinstance(value, dict):
+                properties = schema.get("properties", {})
+                required = set(schema.get("required", []))
+                errors.extend(f"missing:{key}" for key in required - set(value))
+                if schema.get("additionalProperties") is False:
+                    errors.extend(f"extra:{key}" for key in set(value) - set(properties))
+                for key in set(value) & set(properties):
+                    errors.extend(schema_errors(value[key], properties[key]))
+            if isinstance(value, list):
+                if len(value) < schema.get("minItems", 0):
+                    errors.append("minItems")
+                item_schema = schema.get("items")
+                if isinstance(item_schema, dict):
+                    for item in value:
+                        errors.extend(schema_errors(item, item_schema))
+            return errors
+
         valid = self.provider_result(approved=False)
         valid["c_backlog"] = [
             {
@@ -2071,7 +2103,7 @@ class AdvisorSessionContractTests(unittest.TestCase):
         valid["new_scope_requests"] = [
             {"id": "SCOPE-1", "summary": "Authorize a separate follow-up."}
         ]
-        self.assertEqual(list(validator.iter_errors(valid)), [])
+        self.assertEqual(schema_errors(valid, FABLE.PLAN_REVIEW_SCHEMA), [])
         normalized = FABLE._validate_review_result(
             valid,
             request=self.request(),
@@ -2101,13 +2133,69 @@ class AdvisorSessionContractTests(unittest.TestCase):
             with self.subTest(field=field):
                 item_schema = FABLE.PLAN_REVIEW_SCHEMA["properties"][field]["items"]
                 self.assertEqual(set(item_schema.get("required", [])), required)
+                self.assertEqual(set(item_schema.get("properties", {})), required)
                 self.assertFalse(item_schema.get("additionalProperties", True))
                 malformed = self.provider_result(approved=field != "blocking_findings")
                 malformed[field] = [{}]
-                self.assertTrue(list(validator.iter_errors(malformed)))
+                self.assertTrue(schema_errors(malformed, FABLE.PLAN_REVIEW_SCHEMA))
                 extra = json.loads(json.dumps(valid))
                 extra[field][0]["unexpected"] = True
-                self.assertTrue(list(validator.iter_errors(extra)))
+                self.assertTrue(schema_errors(extra, FABLE.PLAN_REVIEW_SCHEMA))
+                wrong_type = json.loads(json.dumps(valid))
+                wrong_type[field][0]["id"] = 7
+                self.assertTrue(schema_errors(wrong_type, FABLE.PLAN_REVIEW_SCHEMA))
+
+        unsupported_raw_keywords = {
+            "maxLength",
+            "minLength",
+            "maxItems",
+            "minimum",
+            "maximum",
+        }
+
+        def schema_keywords(schema: object) -> set[str]:
+            if isinstance(schema, dict):
+                return set(schema) | set().union(
+                    *(schema_keywords(value) for value in schema.values()), set()
+                )
+            if isinstance(schema, list):
+                return set().union(*(schema_keywords(value) for value in schema), set())
+            return set()
+
+        self.assertTrue(
+            schema_keywords(FABLE.PLAN_REVIEW_SCHEMA).isdisjoint(
+                unsupported_raw_keywords
+            )
+        )
+
+        for label, mutate in (
+            (
+                "overlong-id",
+                lambda result: result["blocking_findings"][0].__setitem__(
+                    "id", "x" * 129
+                ),
+            ),
+            (
+                "overlong-string",
+                lambda result: result["blocking_findings"][0].__setitem__(
+                    "failure_scenario", "x" * (FABLE.MAX_INPUT_CHARS + 1)
+                ),
+            ),
+            (
+                "overlong-array",
+                lambda result: result["blocking_findings"][0].__setitem__(
+                    "evidence", ["evidence"] * 101
+                ),
+            ),
+        ):
+            bounded = json.loads(json.dumps(valid))
+            mutate(bounded)
+            with self.subTest(bound=label), self.assertRaises(FABLE.AdvisorError):
+                FABLE._validate_review_result(
+                    bounded,
+                    request=self.request(session=f"schema-{label}"),
+                    previous_state=None,
+                )
 
     def call(self, request: dict[str, object], *, approved: bool) -> dict[str, object]:
         return self.call_provider(

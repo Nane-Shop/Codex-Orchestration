@@ -1,3 +1,2 @@
 # Production scripts remain standard-library only. This file is for CI/development.
-jsonschema==4.26.0
 ruff==0.15.21

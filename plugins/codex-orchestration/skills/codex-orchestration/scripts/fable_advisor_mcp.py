@@ -97,39 +97,30 @@ _DeadlineItem = TypeVar("_DeadlineItem")
 # Process-local safety boundary. Values deliberately contain only bounded hashes,
 # versions, finding IDs, sizes, counters, and terminal state.
 _REVIEW_SESSIONS: dict[str, dict[str, Any]] = {}
-_STABLE_ID_SCHEMA = {
-    "type": "string",
-    "minLength": 1,
-    "maxLength": 128,
-    "pattern": "^[A-Za-z0-9._:-]+$",
-}
-_BOUNDED_NONEMPTY_STRING_SCHEMA = {
-    "type": "string",
-    "minLength": 1,
-    "maxLength": MAX_INPUT_CHARS,
-    "pattern": r"\S",
-}
-_BOUNDED_STRING_ARRAY_SCHEMA = {
+# Keep the wire schema inside Claude structured outputs' supported grammar
+# subset. The local post-validator below remains authoritative for bounds,
+# stable-ID syntax, cross-field semantics, and session lineage.
+_STRING_SCHEMA = {"type": "string"}
+_STRING_ARRAY_SCHEMA = {
     "type": "array",
-    "items": _BOUNDED_NONEMPTY_STRING_SCHEMA,
-    "maxItems": 100,
+    "items": _STRING_SCHEMA,
 }
 _BLOCKING_FINDING_SCHEMA = {
     "type": "object",
     "properties": {
-        "id": _STABLE_ID_SCHEMA,
+        "id": _STRING_SCHEMA,
         "class": {"type": "string", "enum": ["A", "A-uncertain", "B"]},
-        "basis_id": _STABLE_ID_SCHEMA,
-        "evidence": {**_BOUNDED_STRING_ARRAY_SCHEMA, "minItems": 1},
-        "failure_scenario": _BOUNDED_NONEMPTY_STRING_SCHEMA,
-        "smallest_correction": _BOUNDED_NONEMPTY_STRING_SCHEMA,
+        "basis_id": _STRING_SCHEMA,
+        "evidence": {**_STRING_ARRAY_SCHEMA, "minItems": 1},
+        "failure_scenario": _STRING_SCHEMA,
+        "smallest_correction": _STRING_SCHEMA,
         "causal_source": {
             "type": "string",
             "enum": ["initial_scope", "new_evidence", "changed_surface"],
         },
-        "causal_reference": _STABLE_ID_SCHEMA,
-        "supersedes_ids": _BOUNDED_STRING_ARRAY_SCHEMA,
-        "new_evidence": _BOUNDED_STRING_ARRAY_SCHEMA,
+        "causal_reference": _STRING_SCHEMA,
+        "supersedes_ids": _STRING_ARRAY_SCHEMA,
+        "new_evidence": _STRING_ARRAY_SCHEMA,
     },
     "required": [
         "id",
@@ -148,14 +139,9 @@ _BLOCKING_FINDING_SCHEMA = {
 _C_BACKLOG_ITEM_SCHEMA = {
     "type": "object",
     "properties": {
-        "id": _STABLE_ID_SCHEMA,
-        "summary": _BOUNDED_NONEMPTY_STRING_SCHEMA,
-        "basis_id": {
-            "type": ["string", "null"],
-            "minLength": 1,
-            "maxLength": 128,
-            "pattern": "^[A-Za-z0-9._:-]+$",
-        },
+        "id": _STRING_SCHEMA,
+        "summary": _STRING_SCHEMA,
+        "basis_id": {"type": ["string", "null"]},
     },
     "required": ["id", "summary", "basis_id"],
     "additionalProperties": False,
@@ -163,8 +149,8 @@ _C_BACKLOG_ITEM_SCHEMA = {
 _NEW_SCOPE_REQUEST_SCHEMA = {
     "type": "object",
     "properties": {
-        "id": _STABLE_ID_SCHEMA,
-        "summary": _BOUNDED_NONEMPTY_STRING_SCHEMA,
+        "id": _STRING_SCHEMA,
+        "summary": _STRING_SCHEMA,
     },
     "required": ["id", "summary"],
     "additionalProperties": False,
@@ -176,22 +162,19 @@ PLAN_REVIEW_SCHEMA = {
             "type": "string",
             "enum": ["PLAN_APPROVED", "PLAN_REVISE"],
         },
-        "summary": {"type": "string", "minLength": 1},
+        "summary": _STRING_SCHEMA,
         "scope_status": {"type": "string", "enum": ["closed", "open"]},
         "blocking_findings": {
             "type": "array",
             "items": _BLOCKING_FINDING_SCHEMA,
-            "maxItems": MAX_REVIEW_FINDING_IDS,
         },
         "c_backlog": {
             "type": "array",
             "items": _C_BACKLOG_ITEM_SCHEMA,
-            "maxItems": MAX_REVIEW_FINDING_IDS,
         },
         "new_scope_requests": {
             "type": "array",
             "items": _NEW_SCOPE_REQUEST_SCHEMA,
-            "maxItems": MAX_REVIEW_FINDING_IDS,
         },
     },
     "required": [
