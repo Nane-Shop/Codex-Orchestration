@@ -77,8 +77,8 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("`executor:` configures only Executor", SKILL)
         self.assertIn("`designer:` configures only Designer", SKILL)
         self.assertIn("never reinterpret", SKILL)
-        self.assertIn("Fable Planner uses `create_plan` and `revise_plan`", SKILL)
-        self.assertIn("Fable Advisor uses `review_plan`", SKILL)
+        self.assertIn("Fable or Opus Planner uses\n`create_plan`", SKILL)
+        self.assertIn("Fable or Opus Advisor uses `review_plan`", SKILL)
         self.assertIn("Advisor: none", SKILL)
 
     def test_ready_role_selection_uses_concise_activation_confirmation(self) -> None:
@@ -328,26 +328,29 @@ Executor — GPT-5.6 Sol high: Activated
     def test_advisor_is_bounded_root_only_and_failure_is_not_approval(self) -> None:
         self.assertIn("PLAN_APPROVED", SKILL)
         self.assertIn("PLAN_REVISE", SKILL)
-        self.assertIn("report only to the root", SKILL)
-        self.assertIn("contact Executors", SKILL)
-        self.assertIn("it never counts as approval", SKILL)
-        self.assertIn("Never exceed five total Advisor model attempts", SKILL)
-        self.assertIn("If review five still returns `PLAN_REVISE`", SKILL)
+        self.assertIn("only to the root", SKILL)
+        self.assertIn("or Executors", SKILL)
+        self.assertIn("never counts as approval", SKILL)
+        self.assertIn("No separate written plan means no Advisor call", SKILL)
+        self.assertIn("Do not call Advisor again automatically", SKILL)
+        self.assertIn("ADVISOR_REVIEWED_WITH_CORRECTIONS", SKILL)
+        self.assertIn("Do not call Reviewer again automatically", SKILL)
+        self.assertIn("REVIEWED_WITH_CORRECTIONS_LOCAL_VERIFIED", SKILL)
+        self.assertIn("REVIEW_UNVERIFIED", SKILL)
         self.assertIn("NOT_ADVISOR_APPROVED", SKILL)
         self.assertNotIn("at most one confirmation pass", SKILL)
 
-    def test_planner_advisor_loop_is_versioned_and_fail_closed(self) -> None:
-        self.assertIn("canonical plan version", SKILL)
+    def test_planner_advisor_review_is_one_shot_and_scope_bound(self) -> None:
         self.assertIn("stable IDs", SKILL)
-        self.assertIn("compact cumulative findings ledger", SKILL)
-        self.assertIn("Reject stale source versions", SKILL)
+        self.assertIn("exact plan", SKILL)
+        self.assertIn("one consolidated plan-correction batch", SKILL)
+        self.assertIn("do not\n   replay automatically", SKILL)
         self.assertIn("same direct model ID", SKILL)
         self.assertIn("For both persistent setup and task-local overrides", SKILL)
-        self.assertIn("explicitly made that seat best-effort", SKILL)
         self.assertIn("An unavailable Executor may leave work with the root", SKILL)
-        self.assertIn("Planner and Advisor never contact one another directly", SKILL)
+        self.assertIn("they never edit, execute, spawn, contact one another", SKILL)
 
-    def test_active_advisor_guidance_uses_the_five_review_bound(self) -> None:
+    def test_active_guidance_uses_the_one_shot_review_workflow(self) -> None:
         active_guidance = {
             "README.md": README,
             "SKILL.md": SKILL,
@@ -372,10 +375,12 @@ Executor — GPT-5.6 Sol high: Activated
                 for phrase in stale_phrases:
                     self.assertNotIn(phrase, content)
 
-        self.assertIn("after five model attempts", README)
-        self.assertIn("five-round bounded approval loop", REFERENCE)
-        self.assertIn("at most five Advisor model attempts", REFERENCE)
-        self.assertIn("five-attempt approval bound", RELEASE)
+        for content in active_guidance.values():
+            self.assertIn("No separate written plan means no Advisor call", content)
+            self.assertIn("direct current-task user instruction", content)
+        self.assertIn("one Advisor call", README)
+        self.assertIn("one Reviewer", REFERENCE)
+        self.assertIn("no automatic replay or re-review", RELEASE)
         self.assertEqual(NATIVE_SCRIPT.count("ADVISOR_REVIEW_LIMIT ="), 1)
         # Product/model names and unrelated allowance facts remain unchanged.
         self.assertIn("Claude Fable 5", README)

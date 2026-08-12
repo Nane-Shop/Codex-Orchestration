@@ -258,7 +258,7 @@ class PackagingTests(unittest.TestCase):
 
         self.assertEqual(manifest["name"], "codex-orchestration")
         self.assertEqual(manifest["skills"], "./skills/")
-        self.assertEqual(manifest["version"], "0.10.2")
+        self.assertEqual(manifest["version"], "0.11.0")
         self.assertEqual(manifest["mcpServers"], "./.mcp.json")
         self.assertEqual(manifest["repository"], CANONICAL_SOURCE_URL)
         self.assertEqual(manifest["homepage"], f"{CANONICAL_WEB_URL}#readme")
@@ -290,7 +290,7 @@ class PackagingTests(unittest.TestCase):
             f"{CANONICAL_WEB_URL}/security/advisories/new",
             security,
         )
-        self.assertIn("## 0.10.2 — 2026-08-12", changelog)
+        self.assertIn("## 0.11.0 — 2026-08-12", changelog)
 
         old_repository = "Cj" + "builds/Codex-Orchestration"
         tracked = subprocess.run(
@@ -321,7 +321,7 @@ class PackagingTests(unittest.TestCase):
         self.assertFalse((SKILL_ROOT / "scripts" / "update_plugin.py").exists())
         self.assertIn("config/batchWrite", native.read_text(encoding="utf-8"))
         self.assertIn('"--repair"', native.read_text(encoding="utf-8"))
-        self.assertIn('"version": "0.10.2"', native.read_text(encoding="utf-8"))
+        self.assertIn('"version": "0.11.0"', native.read_text(encoding="utf-8"))
         self.assertIn("validate_routing_state", routing_state.read_text(encoding="utf-8"))
         self.assertIn("Standalone custom agent", custom.read_text(encoding="utf-8"))
 
@@ -517,7 +517,7 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("@openai/codex@0.144.1", workflow)
         smoke_text = smoke.read_text(encoding="utf-8")
         self.assertIn('OLD_VERSION = "0.5.0"', smoke_text)
-        self.assertIn('NEW_VERSION = "0.10.2"', smoke_text)
+        self.assertIn('NEW_VERSION = "0.11.0"', smoke_text)
         self.assertIn("old Advisor-only cache unexpectedly supports Planner", smoke_text)
         self.assertIn("Upgraded installed skill is missing Planner contract", smoke_text)
         self.assertIn("reused the Advisor-only 0.5.0 cache directory", smoke_text)
@@ -556,7 +556,8 @@ class PackagingTests(unittest.TestCase):
 
         self.assertIn("CODEX COORDINATES THE WORK", readme)
         self.assertIn("PLANNER CREATES THE FIRST PLAN", readme)
-        self.assertIn("ADVISOR REVIEWS IT", readme)
+        self.assertIn("ADVISOR REVIEWS ONCE", readme)
+        self.assertIn("REVIEWER REVIEWS ONCE", readme)
         self.assertIn("EXECUTORS IMPLEMENT IT", readme)
         self.assertIn("CODEX TESTS & DELIVERS", readme)
         self.assertNotIn("SOL IS THE ORCHESTRATOR", readme)
@@ -577,11 +578,13 @@ class PackagingTests(unittest.TestCase):
 
         self.assertIn("PLAN_APPROVED", skill)
         self.assertIn("PLAN_REVISE", skill)
-        self.assertIn("report only to the root", skill)
-        self.assertIn("Never exceed five total Advisor model attempts", skill)
-        self.assertIn("compact cumulative findings ledger", skill)
+        self.assertIn("only to the root", skill)
+        self.assertIn("No separate written plan means no Advisor call", skill)
+        self.assertIn("Do not call Advisor again automatically", skill)
+        self.assertIn("Do not call Reviewer again automatically", skill)
+        self.assertIn("five rounds and five attempts as a transport/session", skill)
         self.assertNotIn("at most one confirmation pass", skill)
-        self.assertIn("it never counts as approval", skill)
+        self.assertIn("never counts as approval", skill)
         self.assertIn("Current MCP requests do not carry caller identity", skill)
         self.assertIn("caller isolation is instruction-enforced", skill)
 

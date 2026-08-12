@@ -6,10 +6,10 @@ Bring models like Claude Fable 5 and Claude Opus 5 into Codex, give each model a
 
 Codex Orchestration adds four simple roles to a Codex task:
 
-- **Planner** creates the plan and improves it after feedback. It is optional; when omitted, your current Codex model plans.
-- **Advisor** reviews the plan, finds important gaps, and approves it when it is ready. It is optional.
+- **Planner** creates an optional written plan; when omitted, your current Codex model plans.
+- **Advisor** reviews that written plan once and returns one consolidated finding set. It is optional.
 - **Designer** turns approved requirements into a bounded visual, UX, interaction, information-architecture, or design-system handoff. It is optional.
-- **Executor** implements the approved plan. It is required for setup.
+- **Executor** implements the root-validated plan. It is required for setup.
 
 The model selected for the Codex task remains in charge. It passes work between the roles, checks every result, and gives you the final answer.
 
@@ -26,17 +26,10 @@ The model selected for the Codex task remains in charge. It passes work between 
               Fable 5, another model, or Codex
                              |
                              v
-                    ADVISOR REVIEWS IT
-                       finds real gaps
+                  ADVISOR REVIEWS ONCE
                              |
-                   needs work? -- yes --+
-                             |            |
-                            no            v
-                             |      PLANNER IMPROVES IT
-                             |            |
-                             +<-----------+
-                             |
-                       PLAN APPROVED
+                             v
+                    CODEX CORRECTS ONCE
                              |
                              v
                 DESIGNER SHAPES THE EXPERIENCE
@@ -46,16 +39,18 @@ The model selected for the Codex task remains in charge. It passes work between 
                   EXECUTORS IMPLEMENT IT
                              |
                              v
+                  REVIEWER REVIEWS ONCE
+                             |
+                             v
                     CODEX TESTS & DELIVERS
 ```
 
-Planner and Advisor can work through several revisions. The Advisor closes the
-approved task criteria and safety invariants; optional hardening stays in a
-non-blocking `C` backlog. Each review is hash-bound to its scope, plan, round,
-predecessor, exact cumulative ledger, and any independently authorized scope-growth
-provenance. Codex stops on approval, after five model attempts, or when runtime
-convergence controls detect a review treadmill or unauthorized plan growth.
-Every terminal halt stops before Executor work and is never approval.
+No separate written plan means no Advisor call. A written plan gets at most one Advisor call,
+one validated consolidated plan correction, and then implementation.
+After implementation, Codex makes at most one Reviewer call, applies at most one
+validated consolidated code correction, and closes with deterministic gates and
+self-review. There is no automatic replay or re-review. Extra review requires a
+direct current-task user instruction.
 
 ## Why use it?
 

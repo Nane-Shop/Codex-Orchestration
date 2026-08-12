@@ -41,9 +41,9 @@ except ModuleNotFoundError as exc:  # pragma: no cover - Python < 3.11
     raise SystemExit("Python 3.11 or newer is required (missing tomllib).") from exc
 
 
-POLICY_VERSION = 6
-STATE_SCHEMA = 6
-ADVISOR_REVIEW_LIMIT = 5
+POLICY_VERSION = 7
+STATE_SCHEMA = 7
+ADVISOR_REVIEW_LIMIT = 1
 STATE_FILENAME = ".codex-orchestration-routing.json"
 PROBE_VALUE = "CODEX_ORCHESTRATION_CAPABILITY_PROBE"
 PLUGIN_ID = "codex-orchestration@codex-orchestration"
@@ -457,7 +457,7 @@ class AppServer:
                     "clientInfo": {
                         "name": "codex_orchestration_installer",
                         "title": "Codex Orchestration Installer",
-                        "version": "0.10.2",
+                        "version": "0.11.0",
                     },
                     "capabilities": {"experimentalApi": True},
                 },
@@ -1126,17 +1126,6 @@ def build_policy(
     advisor: dict[str, Any] | None,
     designer: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
-    advisor_review_limit = (
-        "zero",
-        "one",
-        "two",
-        "three",
-        "four",
-        "five",
-        "six",
-        "seven",
-        "eight",
-    )[ADVISOR_REVIEW_LIMIT]
     has_direct_route = executor["kind"] == "model" or (
         planner is not None and planner["kind"] == "model"
     ) or (
@@ -1159,23 +1148,28 @@ def build_policy(
         else "No Planner is configured. The root drafts and revises every plan."
     )
     advisor_mode = (
-        "For a non-trivial plan, the root reviews task closure before Executor work. "
-        "PLAN_APPROVED ends review early; PLAN_REVISE returns to the Planner, or root "
-        "when Planner is omitted. There may be at most "
-        f"{advisor_review_limit} total Advisor attempts. Every launched review "
-        "consumes one, including failed runtime identity, provider schema, or "
-        "semantic validation."
+        "No separate written plan means no Advisor call. A written plan permits at "
+        "most one Advisor call. Validate consolidated findings against scope, "
+        "criteria, evidence, safety, and authority. "
+        "PLAN_APPROVED records ADVISOR_APPROVED. On PLAN_REVISE, apply one "
+        "consolidated plan-correction batch, record "
+        "ADVISOR_REVIEWED_WITH_CORRECTIONS, and implement. "
+        "Do not call Advisor again automatically. Do not replay an Advisor failure "
+        "automatically; continue as NOT_ADVISOR_APPROVED."
         if advisor is not None
         else (
-            "No Advisor is configured. Do not create a review loop; after a configured "
-            "Planner drafts, the root validates the plan before releasing Executor work."
+            "No Advisor is configured. No separate written plan means no Advisor call; "
+            "the root validates any written plan before releasing Executor work."
             if planner is not None
-            else "No Advisor is configured. Do not create an Advisor review step."
+            else (
+                "No Advisor is configured. No separate written plan means no Advisor "
+                "call; the root owns and validates any plan it creates."
+            )
         )
     )
     designer_mode = (
-        "After approval, the root may send bounded design work to the configured "
-        "Designer with approved requirements and owned design artifacts. Designer "
+        "After plan validation, the root may send bounded design work to the configured "
+        "Designer with validated requirements and owned design artifacts. Designer "
         "may edit only those artifacts and cannot revise the plan, implementation, "
         "or release Executor."
         if designer is not None
@@ -1195,9 +1189,11 @@ If you are the root task model, you are the orchestrator. Own intent, planning, 
 
 {designer_mode}
 
-The runtime review contract is authoritative; do not duplicate its schema in prose. The root owns plan version, ledger, attempt count, validation, and release. There is no Finalizer seat. For Advisor rounds two through {advisor_review_limit}, send only the current plan and version plus a compact cumulative ledger, not prior transcripts. Reject a stale plan version or an invalid or incomplete ledger.
+The runtime contract is authoritative. The root owns validation, implementation, and release. There is no Finalizer seat. Only approved criteria and safety invariants block; hardening is `C` backlog, scope requests need user authority, and changed surface never authorizes growth. Pass independent user-authority provenance.
 
-On PLAN_REVISE, merge validated dispositions before another review. Only approved criteria and safety invariants block; reviewer-added hardening is `C` backlog and scope requests need user authority. Ordinary changed surface never authorizes plan growth; pass independent user-authority provenance. Honor runtime convergence and terminal halts. Attempt {advisor_review_limit} or a round-{advisor_review_limit} PLAN_REVISE halts before Executor with a non-approval artifact. Route failure also halts. Only explicit current-task best-effort changes this: Planner failure permits the root to take over; Advisor failure may proceed only as NOT_ADVISOR_APPROVED. Never persist best-effort.
+After implementation, make one Fable Code Reviewer `review_result` call with a fresh ID, exact SHA, and evidence. RESULT_ACCEPTED records REVIEW_ACCEPTED only while that SHA is unchanged and final gates pass. On RESULT_FIX_REQUIRED, validate findings and apply one consolidated code-correction batch. Do not call Reviewer again automatically. Run tests, typecheck, build, diff-check, and self-review. If green, record REVIEWED_WITH_CORRECTIONS_LOCAL_VERIFIED and say Reviewer did not accept the final corrected SHA. Reviewer failure is not retried: record REVIEW_UNVERIFIED. Red gates record LOCAL_VERIFICATION_FAILED, then debug without model re-review.
+
+Extra review requires a direct current-task user instruction. Root may propose but not launch it. It uses the exact artifact and a fresh ID without resetting circuit or authority.
 
 When executor delegation helps, use only the configured route and a bounded packet with objective, owned scope, criteria, checks, and handoff. Inspect, integrate, and verify every result.
 
@@ -1210,19 +1206,16 @@ Planner and Advisor are root-directed: they cannot contact each other, Designer,
         "claude_subscription",
     }:
         planner_hint = (
-            "For the initial Planner draft, call `create_plan` from MCP server "
-            f"{json.dumps(planner['server'])}; after PLAN_REVISE, call `revise_plan` "
-            "from that server. These are root tool calls. Require PLAN_DRAFT from "
-            "creation, then assign the canonical version. Require PLAN_REVISION, "
-            "FINDINGS_LEDGER, and REVISED_PLAN from each revision."
+            "For an initial Planner draft, call `create_plan` from MCP server "
+            f"{json.dumps(planner['server'])}. This is a root tool call. Require "
+            "PLAN_DRAFT, then let the root own any one-shot correction."
         )
     elif planner is not None:
         planner_hint = (
-            "For each Planner draft or revision, call this tool with "
+            "For an initial Planner draft, call this tool with "
             f"{_spawn_route(planner)}, fork_turns = \"none\". Send the complete "
-            "self-contained packet for that round. Require PLAN_DRAFT initially; "
-            "require PLAN_REVISION, the source version, complete findings ledger, "
-            "and full revised plan after PLAN_REVISE."
+            "self-contained packet and require PLAN_DRAFT. The root owns any one-shot "
+            "correction after Advisor feedback."
         )
     else:
         planner_hint = "No Planner route is configured; the root drafts and revises."
@@ -1234,8 +1227,8 @@ Planner and Advisor are root-directed: they cannot contact each other, Designer,
             "For an advisor review, call `review_plan` from MCP server "
             f"{json.dumps(advisor['server'])} with the round's self-contained packet. "
             "This is a read-only root tool call, not a spawned child. Require "
-            "PLAN_APPROVED or PLAN_REVISE and fail closed unless the user explicitly "
-            "made Advisor failure best-effort for the current task."
+            "PLAN_APPROVED or PLAN_REVISE. Do not retry failure automatically; report "
+            "NOT_ADVISOR_APPROVED and continue under the saved one-shot policy."
         )
     elif advisor is not None:
         advisor_hint = (

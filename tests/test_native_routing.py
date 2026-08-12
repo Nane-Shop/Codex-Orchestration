@@ -455,25 +455,27 @@ class NativeRoutingTests(unittest.TestCase):
         self.assertIn("never spawn descendants", mode)
         self.assertIn("Explicit user instructions win", mode)
         self.assertIn("Persistent and task-local Planner and Advisor routes", mode)
-        self.assertEqual(NATIVE.ADVISOR_REVIEW_LIMIT, 5)
-        self.assertIn("at most five total Advisor attempts", mode)
-        self.assertIn("Every launched review consumes one", mode)
-        self.assertIn("PLAN_APPROVED ends review early", mode)
-        self.assertIn("rounds two through five", mode)
-        self.assertIn(
-            "current plan and version plus a compact cumulative ledger, not prior transcripts",
-            mode,
-        )
-        self.assertIn("round-five PLAN_REVISE halts before Executor", mode)
-        self.assertIn("non-approval artifact", mode)
+        self.assertEqual(NATIVE.ADVISOR_REVIEW_LIMIT, 1)
+        self.assertIn("No separate written plan means no Advisor call", mode)
+        self.assertIn("at most one Advisor call", mode)
+        self.assertIn("one consolidated plan-correction batch", mode)
+        self.assertIn("ADVISOR_REVIEWED_WITH_CORRECTIONS", mode)
+        self.assertIn("Do not call Advisor again automatically", mode)
+        self.assertIn("Do not replay an Advisor failure automatically", mode)
         self.assertIn("NOT_ADVISOR_APPROVED", mode)
-        self.assertIn("Planner failure permits the root to take over", mode)
-        self.assertIn("stale plan version", mode)
-        self.assertIn("invalid or incomplete ledger", mode)
-        stale_limit_word = "ei" + "ght"
-        self.assertNotIn(f"{stale_limit_word} total Advisor reviews", mode)
-        self.assertNotIn(f"round-{stale_limit_word} PLAN_REVISE", mode)
-        self.assertNotIn(f"rounds two through {stale_limit_word}", mode)
+        self.assertIn("one Fable Code Reviewer `review_result` call", mode)
+        self.assertIn("one consolidated code-correction batch", mode)
+        self.assertIn("RESULT_FIX_REQUIRED", mode)
+        self.assertIn("REVIEWED_WITH_CORRECTIONS_LOCAL_VERIFIED", mode)
+        self.assertIn("REVIEW_UNVERIFIED", mode)
+        self.assertIn("LOCAL_VERIFICATION_FAILED", mode)
+        self.assertIn("tests, typecheck, build, diff-check, and self-review", mode)
+        self.assertIn("did not accept the final corrected SHA", mode)
+        self.assertIn("direct current-task user instruction", mode)
+        self.assertIn("Do not call Reviewer again automatically", mode)
+        self.assertNotIn("rounds two through", mode)
+        self.assertNotIn("before another review", mode)
+        self.assertNotIn("round-five", mode)
         self.assertIn("There is no Finalizer seat", mode)
         self.assertIn("configured Designer", mode)
         self.assertIn("design artifacts", mode)
@@ -482,10 +484,10 @@ class NativeRoutingTests(unittest.TestCase):
         self.assertIn("cannot contact each other, Designer, or Executors", mode)
         self.assertLess(
             mode.index("configured Planner drafts"),
-            mode.index("reviews task closure"),
+            mode.index("separate written plan"),
         )
         self.assertLess(
-            mode.index("reviews task closure"),
+            mode.index("separate written plan"),
             mode.index("On PLAN_REVISE"),
         )
         self.assertLess(
@@ -505,28 +507,19 @@ class NativeRoutingTests(unittest.TestCase):
         self.assertNotIn("tool_namespace", mode + usage)
         self.assertNotIn("enabled = true", mode + usage)
 
-    def test_policy_renders_every_review_bound_from_the_authoritative_limit(
+    def test_policy_does_not_expand_the_one_shot_limit_from_runtime_capacity(
         self,
     ) -> None:
         executor = {"kind": "model", "model": "gpt-5.6-luna", "effort": "xhigh"}
         planner = {"kind": "model", "model": "gpt-5.6-sol", "effort": "high"}
         advisor = {"kind": "model", "model": "gpt-5.6-terra", "effort": "high"}
 
-        with mock.patch.object(NATIVE, "ADVISOR_REVIEW_LIMIT", 7):
-            mode, _ = NATIVE.build_policy(executor, planner, advisor)
+        mode, _ = NATIVE.build_policy(executor, planner, advisor)
 
-        for expected in (
-            "at most seven total Advisor attempts",
-            "rounds two through seven",
-            "round-seven PLAN_REVISE",
-        ):
-            self.assertIn(expected, mode)
-        for hard_coded in (
-            "at most five total Advisor attempts",
-            "rounds two through five",
-            "round-five PLAN_REVISE",
-        ):
-            self.assertNotIn(hard_coded, mode)
+        self.assertIn("at most one Advisor call", mode)
+        self.assertIn("Do not call Advisor again automatically", mode)
+        self.assertNotIn("rounds two through", mode)
+        self.assertNotIn("before another review", mode)
 
     def test_policy_is_compact_and_preserves_closure_runtime_controls(self) -> None:
         executor = {"kind": "model", "model": "gpt-5.6-luna", "effort": "xhigh"}
@@ -540,14 +533,13 @@ class NativeRoutingTests(unittest.TestCase):
 
         self.assertLessEqual(len(mode) + len(usage), 4_800)
         for required in (
-            "task closure",
+            "separate written plan",
             "`C` backlog",
-            "convergence",
-            "five",
-            "attempt",
+            "one Advisor call",
+            "one Fable Code Reviewer `review_result` call",
             "independent user-authority provenance",
-            "best-effort",
             "NOT_ADVISOR_APPROVED",
+            "REVIEW_UNVERIFIED",
         ):
             self.assertIn(required, mode + usage)
         self.assertNotIn("review_session_id", mode + usage)
@@ -558,12 +550,12 @@ class NativeRoutingTests(unittest.TestCase):
         advisor = {"kind": "model", "model": "gpt-5.6-terra", "effort": "high"}
         root_mode, root_usage = NATIVE.build_policy(executor, None, advisor)
         self.assertIn("root drafts and revises every plan", root_mode)
-        self.assertIn("reviews task closure", root_mode)
+        self.assertIn("separate written plan", root_mode)
         self.assertIn("No Planner route is configured", root_usage)
 
         planner = {"kind": "model", "model": "gpt-5.6-sol", "effort": "xhigh"}
         planner_mode, planner_usage = NATIVE.build_policy(executor, planner, None)
-        self.assertIn("root validates the plan before releasing Executor", planner_mode)
+        self.assertIn("root validates any written plan before releasing Executor", planner_mode)
         self.assertIn("No advisor route is configured", planner_usage)
         self.assertNotIn("review_plan", planner_usage)
 
@@ -576,10 +568,8 @@ class NativeRoutingTests(unittest.TestCase):
         _, fable_planner_usage = NATIVE.build_policy(
             executor, fable_planner, advisor
         )
-        self.assertLess(
-            fable_planner_usage.index("create_plan"),
-            fable_planner_usage.index("revise_plan"),
-        )
+        self.assertIn("create_plan", fable_planner_usage)
+        self.assertNotIn("revise_plan", fable_planner_usage)
         self.assertIn("review packet", fable_planner_usage)
 
         fable_advisor = dict(fable_planner)
@@ -782,8 +772,8 @@ class NativeRoutingTests(unittest.TestCase):
         state = json.loads(
             (self.home / NATIVE.STATE_FILENAME).read_text(encoding="utf-8")
         )
-        self.assertEqual(state["schema"], 6)
-        self.assertEqual(state["policy_version"], 6)
+        self.assertEqual(state["schema"], 7)
+        self.assertEqual(state["policy_version"], 7)
         self.assertEqual(state["planner"]["effort"], "xhigh")
         self.assertEqual(state["designer"]["effort"], "medium")
 
@@ -792,8 +782,8 @@ class NativeRoutingTests(unittest.TestCase):
         self.assertIn("Designer: gpt-5.6-luna@medium", status.stdout)
         self.assertEqual(status.returncode, 0)
 
-    def test_legacy_state_schemas_upgrade_to_six_without_losing_restore(self) -> None:
-        for legacy_schema in (1, 2, 3, 4, 5):
+    def test_legacy_state_schemas_upgrade_to_seven_without_losing_restore(self) -> None:
+        for legacy_schema in (1, 2, 3, 4, 5, 6):
             with self.subTest(schema=legacy_schema):
                 setup_arguments = ["--executor-model", "gpt-5.6-luna"]
                 if legacy_schema == 2:
@@ -835,8 +825,8 @@ class NativeRoutingTests(unittest.TestCase):
                     "--apply",
                 )
                 upgraded = json.loads(state_path.read_text(encoding="utf-8"))
-                self.assertEqual(upgraded["schema"], 6)
-                self.assertEqual(upgraded["policy_version"], 6)
+                self.assertEqual(upgraded["schema"], 7)
+                self.assertEqual(upgraded["policy_version"], 7)
                 self.assertEqual(upgraded["previous"], original_previous)
                 self.assertEqual(upgraded["planner"]["model"], "gpt-5.6-sol")
                 self.assertEqual(upgraded["designer"]["model"], "gpt-5.6-luna")
@@ -862,6 +852,8 @@ class NativeRoutingTests(unittest.TestCase):
             (4, 1),
             (5, 6),
             (6, 5),
+            (7, 6),
+            (6, 7),
             (6, True),
         ):
             with self.subTest(schema=schema, policy=wrong_policy):
@@ -2238,7 +2230,7 @@ class NativeRoutingTests(unittest.TestCase):
         state = json.loads(
             (self.home / NATIVE.STATE_FILENAME).read_text(encoding="utf-8")
         )
-        self.assertEqual(state["schema"], 6)
+        self.assertEqual(state["schema"], 7)
         self.assertEqual(
             state["advisor"],
             {

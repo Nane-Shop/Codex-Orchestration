@@ -64,7 +64,7 @@ class FableAdvisorMcpTests(unittest.TestCase):
             "server": "fable-advisor-python3",
         }
 
-    def write_state(self, *, schema: int = 6, **seats: object) -> None:
+    def write_state(self, *, schema: int = 7, **seats: object) -> None:
         subscription_routes = [
             route
             for route in seats.values()
@@ -846,11 +846,24 @@ class FableAdvisorMcpTests(unittest.TestCase):
         self.write_state(schema=4, advisor=self.route(), designer=self.route())
         with self.assertRaisesRegex(FABLE.AdvisorError, "state is invalid"):
             FABLE.load_fable_route(self.home)
-        self.write_state(schema=6, advisor=self.route())
+        self.write_state(schema=7, advisor=self.route())
         self.assertEqual(FABLE.load_fable_route(self.home)["model"], FABLE.FABLE_MODEL)
 
+    def test_bridge_accepts_policy_seven_and_keeps_transport_ceiling_five(self) -> None:
+        self.assertEqual(FABLE.CURRENT_STATE_SCHEMA, 7)
+        self.assertEqual(FABLE.CURRENT_POLICY_VERSION, 7)
+        self.assertEqual(FABLE.MAX_REVIEW_ROUNDS, 5)
+        self.assertEqual(FABLE.MAX_REVIEW_ATTEMPTS, 5)
+        self.write_state(schema=7, advisor=self.route())
+        self.assertEqual(FABLE.load_fable_route(self.home)["model"], FABLE.FABLE_MODEL)
+        for stale_or_future in (6, 8):
+            with self.subTest(schema=stale_or_future):
+                self.write_state(schema=stale_or_future, advisor=self.route())
+                with self.assertRaises(FABLE.AdvisorError):
+                    FABLE.load_fable_route(self.home)
+
     def test_opus_route_pins_primary_and_rejects_every_unverified_helper(self) -> None:
-        self.write_state(schema=6, advisor=self.opus_route("xhigh"))
+        self.write_state(schema=7, advisor=self.opus_route("xhigh"))
         result, calls = self.invoke_with_results(
             FABLE.review_plan,
             "packet",
@@ -1001,7 +1014,7 @@ class FableAdvisorMcpTests(unittest.TestCase):
     def test_opus_planner_create_and_revise_pin_exact_route_and_primary_usage(
         self,
     ) -> None:
-        self.write_state(schema=6, planner=self.opus_route("max"))
+        self.write_state(schema=7, planner=self.opus_route("max"))
         created, create_calls = self.invoke_with_results(
             FABLE.create_plan,
             "bounded task packet",

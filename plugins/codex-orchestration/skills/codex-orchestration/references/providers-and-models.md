@@ -60,7 +60,7 @@ The control surface and the route are separate:
 - current task model is the one root orchestrator;
 - Codex decides whether delegation is useful;
 - optional Planner drafts and revises through the root; omitted Planner means the root plans;
-- optional Advisor is directed through the root and reviews through a five-round bounded approval loop before Executor work;
+- optional Advisor is directed through the root; No separate written plan means no Advisor call, and a written plan gets at most one Advisor call;
 - executor packets are bounded and self-contained;
 - children do not create descendants;
 - user overrides and `no subagents` win;
@@ -85,7 +85,10 @@ For Claude Fable 5 or Claude Opus 5 it names the enabled bundled MCP server and 
 
 The custom mode text is visible in spawned children too. That is why it says: if root, orchestrate; if child, stay within the packet and never spawn.
 
-The root stops early on approval and launches at most five Advisor model attempts.
+The root validates one consolidated Advisor result and never launches an automatic
+second call. After implementation it makes at most one Reviewer call, one
+consolidated code correction, and deterministic final checks. There is no automatic
+replay or re-review. Extra review requires a direct current-task user instruction.
 
 ## Routing strength and its honest boundary
 

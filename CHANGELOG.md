@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.11.0 — 2026-08-12
+
+- Replace the automatic multi-round planning loop with one natural rule: no
+  separate written plan means no Advisor call; a written plan gets at most one
+  Advisor review and one consolidated plan correction.
+- Add one exact-SHA Fable Code Reviewer call after implementation, followed by
+  at most one consolidated code correction and deterministic local gates. Model
+  failures are never replayed automatically, and extra review requires a direct
+  current-task user instruction.
+- Advance saved routing policy/state identity to schema 7 without new fields;
+  preserve schemas 1-6 for safe migration and keep the Advisor bridge's five-call
+  transport ceiling and MCP protocol 3.0.0 unchanged.
+
 ## 0.10.2 — 2026-08-12
 
 - Restore Claude-supported stable-ID patterns on every Advisor result field

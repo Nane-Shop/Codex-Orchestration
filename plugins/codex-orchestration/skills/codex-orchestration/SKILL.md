@@ -664,69 +664,62 @@ After spawning, use the tool result or client metadata to confirm the accepted r
 - `root`: no Planner route is configured, so the root plans;
 - `none`: no Advisor or Designer is configured for that seat.
 
-Tool acceptance proves the requested route was valid and accepted, not necessarily that the client exposes post-start runtime identity. Child prose claiming a model name is not proof. If an exact route fails, report it to the root. An unavailable configured Planner or Advisor halts before Executor work unless the user explicitly made that seat best-effort for the current task; apply the bounded degradation rules below and disclose it. A configured Designer failure blocks work that explicitly requires its design handoff, but does not block unrelated Executor work; the root owns design when Designer was omitted. An unavailable Executor may leave work with the root only when the user did not require delegation or that Executor route. Never describe an unavailable route as successful.
+Tool acceptance proves the requested route was valid and accepted, not necessarily that the client exposes post-start runtime identity. Child prose claiming a model name is not proof. If a configured Planner fails, disclose it and let the root own the plan. If Advisor fails, do not retry; disclose it and continue as `NOT_ADVISOR_APPROVED`. A configured Designer failure blocks work that explicitly requires its design handoff, but does not block unrelated Executor work; the root owns design when Designer was omitted. An unavailable Executor may leave work with the root only when the user did not require delegation or that Executor route. Never describe an unavailable route as successful.
 
 ## Planner and Advisor workflow
 
-Planner is optional. When no Planner route is configured, the root creates and revises the plan. When configured, send the Planner one self-contained packet containing user intent, acceptance criteria, repository facts, constraints, proposed executor slices, risks, and verification. Require `PLAN_DRAFT`. Planner and Advisor report only to the root. They never edit, execute, spawn, contact one another, contact Executors, or release Executor work.
+Planner is optional. When omitted, the root creates its own plan. When configured,
+send one self-contained packet and require `PLAN_DRAFT`. Planner and Advisor report
+only to the root; they never edit, execute, spawn, contact one another or Executors,
+or release work.
 
-Advisor is optional. If none is configured, the root validates the Planner's
-draft and may continue. For a non-trivial plan with an Advisor, use one bounded
-review session:
+No separate written plan means no Advisor call. If the root creates a written
+implementation plan and Advisor is configured, make at most one `review_plan` call:
 
-1. Freeze the task goal, approved scope, non-goals, stable acceptance criteria,
-   and safety invariants. Compute the canonical scope hash and current UTF-8 plan
-   hash; begin round one with an empty predecessor attestation.
-2. Send the complete structured session request and require a typed
-   `PLAN_APPROVED` or `PLAN_REVISE` result. `PLAN_APPROVED` is valid only with no
-   blockers and makes the session terminal.
-3. Treat only evidenced A, A-uncertain, and B findings tied to approved criteria
-   or safety invariants as blockers. Keep optional hardening in `C` backlog and
-   new scope requests non-blocking until the user authorizes scope change.
-4. On `PLAN_REVISE`, send the canonical version and compact cumulative findings
-   ledger to the same Planner route, or let the root revise when Planner is
-   omitted. Require `PLAN_REVISION`, a complete `FINDINGS_LEDGER`, and the full
-   revised plan. Reject stale source versions, missing or duplicated findings,
-   and empty rationales.
-5. Increment the plan version, recompute its hash, pass the exact prior response
-   attestation, identify the changed surface, and review again. Ordinary changed
-   surface does not authorize plan growth; include independent user-authority
-   provenance only when scope growth was actually approved. Never invent a
-   later-round blocker without new evidence or a changed-surface cause.
-6. Honor runtime terminal state. Two consecutive high-closure rounds that add
-   blockers halt as `NON_CONVERGING_REVIEW`; plan growth over 25 percent with a
-   new blocker and no authorized change halts as `UNAUTHORIZED_PLAN_GROWTH`.
-   A halt is never approval.
-7. Stop early on approval. Never exceed five total Advisor model attempts;
-   failed runtime identity, provider-schema, or semantic results still count.
+1. Bind the request to the approved scope, criteria, safety invariants, exact plan,
+   and hashes required by the bridge.
+2. Require typed `PLAN_APPROVED` or `PLAN_REVISE`. Validate every finding against
+   the user request, evidence, scope, safety, and authority; never apply it blindly.
+3. On `PLAN_APPROVED`, record `ADVISOR_APPROVED` and implement.
+4. On `PLAN_REVISE`, apply one consolidated plan-correction batch, record
+   `ADVISOR_REVIEWED_WITH_CORRECTIONS`, and implement. Do not call Advisor again automatically
+   and never claim the corrected plan was Advisor-approved.
+5. On runtime, provider, identity, schema, timeout, or semantic failure, do not
+   replay automatically. Continue with the root's plan as `NOT_ADVISOR_APPROVED`
+   and disclose the bounded failure category.
 
-Every Advisor result ID and causal reference is a compact 1-128 character token
-from `[A-Za-z0-9._:-]`, never prose. An `initial_scope` reference is the exact
-approved basis ID, a `new_evidence` reference is a compact evidence token with
-the explanation kept in `new_evidence`, and a `changed_surface` reference is an
-exact ID from the request's changed surface. The provider schema enforces the
-supported lexical subset; the local validator remains authoritative for bounds,
-membership, lineage, and other cross-field semantics.
+After implementation is complete and focused checks show it is reviewable, make
+one Fable Code Reviewer `review_result` call with a fresh invocation ID, exact
+technical SHA, complete evidence, and the repository's required acceptance gates.
+On `RESULT_ACCEPTED`, record `REVIEW_ACCEPTED` only while that SHA remains unchanged
+and final local gates pass. On `RESULT_FIX_REQUIRED`, validate the findings, apply
+one consolidated code-correction batch. Do not call Reviewer again automatically.
+Run tests, typecheck, build, diff-check, other repository gates, and root self-review.
+If green, record `REVIEWED_WITH_CORRECTIONS_LOCAL_VERIFIED` and state that Reviewer
+did not accept the final corrected SHA. On Reviewer failure or unavailability, do
+not retry; record `REVIEW_UNVERIFIED`. Red deterministic gates record
+`LOCAL_VERIFICATION_FAILED` and start ordinary debugging, not another model review.
 
-Carry only the immutable closure scope, current plan, and compact cumulative findings ledger;
-do not duplicate transcripts or the detailed runtime schema in policy prose. The
-root owns the canonical plan version, stable IDs, ledger, attempt count, semantic
-validation, and Executor release. Planner and Advisor never contact one another directly.
+Extra Advisor or Reviewer review requires a direct current-task user instruction.
+The root may propose it for consequential work but never launches it automatically.
+The authorization is task- and role-specific, uses the exact current artifact and
+a fresh ID, and does not reset the delivery circuit or broaden mutation authority.
 
-If review five still returns `PLAN_REVISE`, halt before Executor work. Give the user the latest plan and version, complete ledger, latest unresolved findings, and choices to override, re-scope, or change a route. Never label it approved.
-
-A configured Planner or Advisor is required by default. Route failure, malformed output, missing context, stale version, or invalid ledger halts before Executor work. Only an explicit current-task best-effort instruction permits degradation:
-
-- if the configured Planner fails, disclose it and let the root assume Planner duties for the remaining rounds without resetting the five-review budget;
-- if the Advisor fails, disclose it, end the loop, and label the latest validated plan `NOT_ADVISOR_APPROVED` before any allowed continuation.
-
-Do not persist a best-effort flag. An explicit task override applies only to that task.
+The bridge still supports five rounds and five attempts as a transport/session
+safety ceiling for direct explicit callers. That capacity is not the automatic
+workflow. Keep stable IDs, provider schema, ledger, runtime identity, process
+containment, and attestation rules unchanged.
 
 Reject persistent setup or task-local activation when configured Planner and Advisor routes are identical: the same direct model ID, same custom-agent name, or more than one bundled Claude subscription seat. Independent critique is the reason for the Advisor role.
 
-Bundled Claude Planner routes use `create_plan` and `revise_plan`; bundled Claude Advisor routes use `review_plan`. These operations are seat-bound: never send a supplied Planner route to `review_plan`, and never use an Advisor route to create or revise the plan. The policy authorizes only the root to make these read-only calls; Executors must never use or direct them.
+Bundled Claude Planner routes use `create_plan`; the root owns the one correction
+after Advisor feedback. Bundled Claude Advisor routes use `review_plan`. These
+operations are seat-bound: never send a supplied Planner route to `review_plan`,
+and never use an Advisor route to create a plan. Only the root makes these read-only
+calls; Executors never use or direct them.
 
-For compatibility with the established seat contract: Fable Planner uses `create_plan` and `revise_plan`; Fable Advisor uses `review_plan`. Opus uses the same operation-to-seat mapping.
+For compatibility with the established seat contract, Fable or Opus Planner uses
+`create_plan`; Fable or Opus Advisor uses `review_plan`.
 
 ## Designer handoff
 
@@ -744,7 +737,7 @@ Designer may edit only explicitly delegated design artifacts. Otherwise it retur
 a design specification or handoff. It never revises the canonical plan, changes
 implementation code, releases Executor, contacts Planner, Advisor, or Executor, or
 spawns descendants. The root validates the design handoff, resolves conflicts with
-the approved plan, and decides what implementation packet Executor receives. A
+the validated plan, and decides what implementation packet Executor receives. A
 Designer may use the same model as another seat because independent critique is not
 its purpose; the Planner/Advisor route-separation rule remains unchanged.
 
